@@ -29,6 +29,8 @@ const MAX_RECONNECT_ATTEMPTS = 5;
 let reconnectTimer = null;
 // FIX: diferencia "nunca conectou" (falha rápida) de "desconectou em chamada" (backoff)
 let peerHadOpenOnce = false;
+// FIX: fallback para servidor em nuvem PeerJS quando o servidor local (porta 9000) está inacessível
+let peerUseCloudFallback = false;
 
 // Ringtone setup
 let ringtoneCtx = null;
@@ -170,16 +172,16 @@ function initPeer() {
     // FIX: verifica estado real antes de reusar o peer
     if (peer && !peer.destroyed && peer.open) return;
     if (peer && !peer.destroyed) {
-        peer.destroy();
+        try { peer.destroy(); } catch (e) { /* ignore */ }
     }
     peer = null;
     reconnectAttempts = 0;
     peerHadOpenOnce = false;
+    peerUseCloudFallback = false; // sempre tenta servidor local primeiro
     _createPeer();
 }
 
 function _createPeer() {
-    // A Mágica do 4G: Servidores TURN e STUN Públicos Grátis
     const customConfig = {
         iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
@@ -202,21 +204,32 @@ function _createPeer() {
         ]
     };
 
-    peer = new Peer(String(currentUser.id), {
-        host: window.location.hostname,
-        port: 9000,
-        path: '/myapp',
-        secure: window.location.protocol === 'https:',
+    // FIX: fallback — se servidor local (porta 9000) falhou, usa servidor em nuvem PeerJS
+    const useCloud = peerUseCloudFallback;
+    const peerOptions = {
+        host: useCloud ? '0.peerjs.com' : window.location.hostname,
+        port: useCloud ? 443 : 9000,
+        path: useCloud ? '/' : '/myapp',
+        secure: useCloud ? true : (window.location.protocol === 'https:'),
         config: customConfig,
         debug: 1,
-        pingInterval: 5000 // FIX: keep-alive para evitar timeout silencioso do WS
-    });
+        pingInterval: 5000
+    };
+
+    if (useCloud) {
+        console.log('[PeerJS] Conectando ao servidor em nuvem (0.peerjs.com)...');
+    }
+
+    peer = new Peer(String(currentUser.id), peerOptions);
 
     peer.on('open', (id) => {
-        console.log('[PeerJS] Conectado. Meu ID:', id);
-        peerHadOpenOnce = true; // FIX: marca que já conectou alguma vez (reconexão faz sentido)
+        console.log('[PeerJS] Conectado. Meu ID:', id, peerUseCloudFallback ? '(nuvem)' : '(local)');
+        peerHadOpenOnce = true;
         reconnectAttempts = 0;
         if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+        if (peerUseCloudFallback) {
+            showToast('Conectado ao servidor de chamadas em nuvem.', 'success');
+        }
     });
 
     peer.on('disconnected', () => {
@@ -224,11 +237,23 @@ function _createPeer() {
             console.warn('[PeerJS] Desconectado. Não está em chamada, não reconectando.');
             return;
         }
-        // FIX: falha rápida na primeira conexão — servidor inacessível (ex.: porta 9000 fechada / Tailscale)
+        // FIX: falha na primeira conexão — tenta servidor em nuvem antes de desistir
         if (!peerHadOpenOnce) {
-            console.error('[PeerJS] Servidor de sinalização inacessível (conexão inicial falhou).');
             if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-            showToast('Servidor de chamadas indisponível (porta 9000). Verifique se o PeerJS está em execução.', 'error');
+            if (!peerUseCloudFallback) {
+                peerUseCloudFallback = true;
+                if (peer && !peer.destroyed) {
+                    try { peer.destroy(); } catch (e) { /* ignore */ }
+                }
+                peer = null;
+                console.warn('[PeerJS] Servidor local inacessível. Tentando servidor em nuvem...');
+                showToast('Servidor local indisponível. Tentando servidor em nuvem...', 'info');
+                updateCallStatusText('Conectando ao servidor em nuvem...');
+                _createPeer();
+                return;
+            }
+            console.error('[PeerJS] Servidor de sinalização inacessível (local e nuvem).');
+            showToast('Não foi possível conectar ao servidor de chamadas. Tente novamente.', 'error');
             endCall(false);
             return;
         }
@@ -267,12 +292,10 @@ function _createPeer() {
 
     peer.on('error', (err) => {
         if (err.type === 'disconnected' || err.type === 'network') {
-            // FIX: se nunca conectou, evita loop de reconexão — disconnected já vai encerrar a chamada
-            if (!peerHadOpenOnce && isInCall) {
-                console.warn('[PeerJS] Servidor inacessível (conexão inicial):', err.message);
-            } else {
-                console.warn('[PeerJS] Erro de rede (esperado durante reconexão):', err.message);
+            if (peerHadOpenOnce) {
+                console.warn('[PeerJS] Erro de rede (reconexão):', err.message);
             }
+            // Mensagem única e encerramento da chamada ficam em peer.on('disconnected')
         } else {
             console.error('[PeerJS] Erro crítico:', err);
         }

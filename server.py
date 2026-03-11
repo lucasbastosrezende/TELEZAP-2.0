@@ -16,7 +16,7 @@ app = Flask(__name__, static_folder='static', template_folder='templates')
 app.secret_key = os.urandom(32)
 app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10MB (images are compressed client-side)
 CORS(app, supports_credentials=True)
-socketio = SocketIO(app, cors_allowed_origins="*", supports_credentials=True, async_mode='eventlet')
+socketio = SocketIO(app, cors_allowed_origins="*", supports_credentials=True, async_mode='threading')
 
 UPLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static', 'uploads')
 os.makedirs(UPLOAD_DIR, exist_ok=True)
