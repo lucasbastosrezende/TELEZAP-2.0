@@ -134,7 +134,8 @@
                                     title="Ligar Áudio">📞</button>
                                 <button class="btn btn-ghost btn-sm hidden" id="btnCallVideo"
                                     title="Ligar Vídeo">📹</button>
-                                <button class="btn btn-ghost btn-sm hidden" id="btnEditGrupo">⚙️ Editar</button>
+                                 <button class="btn btn-ghost btn-sm hidden" id="btnEditGrupo">⚙️ Editar</button>
+                                 <button class="btn btn-ghost btn-sm" id="btnLixeira" title="Lixeira">🗑️</button>
                             </div>
                         </div>
                         <div class="subtopics-bar hidden" id="subtopicsBar">
@@ -317,6 +318,24 @@
                     garantir que você ouça os outros.</p>
                 <button class="btn btn-primary btn-lg" id="btnEnableMedia" style="width: 100%; padding: 1rem;">Ativar
                     Microfone e Áudio</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal Lixeira -->
+    <div class="modal hidden" id="modalLixeira">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>🗑️ Lixeira de Mensagens</h2>
+                <button class="btn-close" onclick="closeModal('modalLixeira')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p style="margin-bottom: 1rem; color: var(--text-muted); font-size: 0.9rem;">
+                    Aqui você pode restaurar suas mensagens apagadas recentemente nesta conversa.
+                </p>
+                <div id="lixeiraList" class="lixeira-list">
+                    <!-- Itens da lixeira serão inseridos aqui -->
+                </div>
             </div>
         </div>
     </div>

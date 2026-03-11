@@ -159,6 +159,7 @@ async function abrirConversa(id) {
     document.getElementById('chatMessages').classList.remove('hidden');
     document.getElementById('chatInputArea').classList.remove('hidden');
 
+    const subBar = document.getElementById('subtopicsBar');
     const isDirect = conv.tipo === 'direto';
     const otherUser = isDirect ? conv.membros.find(m => m.id !== currentUser.id) : null;
     
@@ -256,9 +257,12 @@ function renderParticipantsSidebar(conv) {
     sidebar.classList.remove('hidden');
     layout.classList.remove('no-participants');
 
+    const inCallSet = (window.usersInCall && window.usersInCall.has) ? window.usersInCall : new Set();
+    const isInCallMember = (id) => currentActiveCallers.includes(id) || inCallSet.has(String(id));
+
     const sortedMembers = [...conv.membros].sort((a, b) => {
-        const aActive = currentActiveCallers.includes(a.id);
-        const bActive = currentActiveCallers.includes(b.id);
+        const aActive = isInCallMember(a.id);
+        const bActive = isInCallMember(b.id);
         if (aActive && !bActive) return -1;
         if (!aActive && bActive) return 1;
         return a.nome.localeCompare(b.nome);
@@ -266,7 +270,7 @@ function renderParticipantsSidebar(conv) {
 
     list.innerHTML = sortedMembers.map(m => {
         const isMe = m.id === currentUser.id;
-        const isActive = currentActiveCallers.includes(m.id);
+        const isActive = isInCallMember(m.id);
         const callerData = (window._activeCallersData || []).find(c => c.user_id === m.id);
         const hasVideo = callerData?.has_video || false;
         
@@ -278,7 +282,7 @@ function renderParticipantsSidebar(conv) {
         const initial = m.nome.charAt(0).toUpperCase();
 
         return `
-            <div class="participant-item ${isActive ? 'participant-active-call' : ''}" onclick="abrirPerfil(${m.id})" ${m.wallpaper ? `style="--wallpaper: url('${m.wallpaper}')"` : ''}>
+            <div class="participant-item ${isActive ? 'participant-active-call' : ''}" data-member-id="${m.id}" onclick="abrirPerfil(${m.id})" ${m.wallpaper ? `style="--wallpaper: url('${m.wallpaper}')"` : ''}>
                 <div class="participant-avatar">
                     ${m.foto 
                         ? `<img src="${m.foto}" alt="${m.nome}" loading="lazy" style="aspect-ratio:1/1;object-fit:cover">` 
@@ -291,6 +295,10 @@ function renderParticipantsSidebar(conv) {
             </div>
 `;
     }).join('');
+
+    if (typeof window.reapplyParticipantsInCall === 'function') {
+        window.reapplyParticipantsInCall();
+    }
 }
 
 // ── Subtopics ──
@@ -1624,6 +1632,71 @@ function playNotifSound() {
 function incrementUnread(convId) {
     unreadCounts[convId] = (unreadCounts[convId] || 0) + 1;
     renderConversasList();
+}
+
+// --- Lixeira ---
+document.getElementById('btnLixeira').addEventListener('click', () => {
+    if (!conversaAtual) return;
+    openModal('modalLixeira');
+    loadLixeira();
+});
+
+async function loadLixeira() {
+    const list = document.getElementById('lixeiraList');
+    list.innerHTML = '<p style="padding: 20px; text-align: center; color: var(--text-muted);">Carregando...</p>';
+
+    try {
+        const res = await fetch(`/api/conversas/${conversaAtual.id}/lixeira`);
+        const msgs = await res.json();
+
+        if (msgs.length === 0) {
+            list.innerHTML = '<p style="padding: 20px; text-align: center; color: var(--text-muted);">Nenhuma mensagem excluída para restaurar.</p>';
+            return;
+        }
+
+        list.innerHTML = '';
+        msgs.forEach(msg => {
+            const item = document.createElement('div');
+            item.className = 'lixeira-item';
+            
+            const time = new Date(msg.excluido_em).toLocaleString('pt-BR');
+            const content = msg.conteudo || (msg.media_url ? '[Mídia]' : '[Sem conteúdo]');
+
+            item.innerHTML = `
+                <div class="lixeira-content">
+                    <div class="lixeira-text" title="${content}">${content}</div>
+                    <div class="lixeira-meta">Excluída em: ${time}</div>
+                </div>
+                <button class="btn-restaurar" onclick="restaurarMensagem(${msg.id})">Restaurar</button>
+            `;
+            list.appendChild(item);
+        });
+    } catch (err) {
+        console.error('Erro ao carregar lixeira:', err);
+        list.innerHTML = '<p style="padding: 20px; text-align: center; color: var(--danger-color);">Erro ao carregar lixeira.</p>';
+    }
+}
+
+async function restaurarMensagem(msgId) {
+    if (!confirm('Deseja restaurar esta mensagem?')) return;
+
+    try {
+        const res = await fetch(`/api/conversas/mensagens/${msgId}/restaurar`, {
+            method: 'POST'
+        });
+        const data = await res.json();
+
+        if (res.ok) {
+            alert('Mensagem restaurada com sucesso!');
+            loadLixeira();
+            // A mensagem aparecerá no chat via SocketIO (new_message)
+        } else {
+            alert('Erro: ' + (data.erro || 'Erro desconhecido'));
+        }
+    } catch (err) {
+        alert('Erro ao restaurar mensagem');
+        console.error(err);
+    }
 }
 
 // Clear unread when opening a conversation

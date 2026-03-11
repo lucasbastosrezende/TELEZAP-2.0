@@ -579,7 +579,7 @@ def listar_mensagens(id):
                 JOIN usuarios u ON m.usuario_id = u.id
                 LEFT JOIN mensagens r ON m.reply_to_id = r.id
                 LEFT JOIN usuarios ru ON r.usuario_id = ru.id
-                WHERE m.conversa_id = ? AND m.subtopico_id = ?
+                WHERE m.conversa_id = ? AND m.subtopico_id = ? AND m.excluido_em IS NULL
                 ORDER BY m.criado_em DESC LIMIT 50
             ''', (id, int(subtopico_id))).fetchall()
         else:
@@ -590,7 +590,7 @@ def listar_mensagens(id):
                 JOIN usuarios u ON m.usuario_id = u.id
                 LEFT JOIN mensagens r ON m.reply_to_id = r.id
                 LEFT JOIN usuarios ru ON r.usuario_id = ru.id
-                WHERE m.conversa_id = ? AND m.subtopico_id IS NULL
+                WHERE m.conversa_id = ? AND m.subtopico_id IS NULL AND m.excluido_em IS NULL
                 ORDER BY m.criado_em DESC LIMIT 50
             ''', (id,)).fetchall()
         msgs = list(reversed(msgs))
@@ -734,7 +734,7 @@ def chat_sync():
         else:
             query += ' AND m.subtopico_id IS NULL'
         
-        query += ' ORDER BY m.criado_em ASC'
+        query += ' AND m.excluido_em IS NULL ORDER BY m.criado_em ASC'
         mensagens = [dict(m) for m in db.execute(query, params).fetchall()]
 
     # 3. Handle Active Call Status
@@ -854,12 +854,62 @@ def deletar_mensagem(msg_id):
     db.execute('INSERT INTO mensagens_apagadas (mensagem_id, conversa_id, apagado_em) VALUES (?, ?, ?)', 
                (msg_id, msg['conversa_id'], agora_manaus().isoformat()))
     
-    db.execute('DELETE FROM mensagens WHERE id = ?', (msg_id,))
+    # Soft delete: mark as excluded instead of deleting
+    db.execute('UPDATE mensagens SET excluido_em = ? WHERE id = ?', (agora_manaus().isoformat(), msg_id))
     db.commit()
 
     socketio.emit('message_deleted', {'id': msg_id}, room=f"conv_{msg['conversa_id']}")
 
     return jsonify({'status': 'ok'}), 200
+
+
+@app.route('/api/conversas/mensagens/<int:msg_id>/restaurar', methods=['POST'])
+@login_required
+def restaurar_mensagem(msg_id):
+    uid = get_user_id()
+    db = get_db_g()
+    msg = db.execute('SELECT conversa_id, usuario_id FROM mensagens WHERE id = ?', (msg_id,)).fetchone()
+    if not msg:
+        return jsonify({'erro': 'Mensagem não encontrada'}), 404
+    
+    if msg['usuario_id'] != uid:
+        return jsonify({'erro': 'Você só pode restaurar suas próprias mensagens'}), 403
+    
+    db.execute('UPDATE mensagens SET excluido_em = NULL WHERE id = ?', (msg_id,))
+    # Remove from sync log so clients can see it again
+    db.execute('DELETE FROM mensagens_apagadas WHERE mensagem_id = ?', (msg_id,))
+    db.commit()
+
+    # Fetch full message to notify clients
+    res_msg = db.execute('''
+        SELECT m.*, u.nome as autor_nome, u.foto as autor_foto, u.username as autor_username,
+               r.conteudo as reply_content, ru.nome as reply_author
+        FROM mensagens m 
+        JOIN usuarios u ON m.usuario_id = u.id
+        LEFT JOIN mensagens r ON m.reply_to_id = r.id
+        LEFT JOIN usuarios ru ON r.usuario_id = ru.id
+        WHERE m.id = ?
+    ''', (msg_id,)).fetchone()
+    
+    msg_dict = dict(res_msg)
+    socketio.emit('new_message', msg_dict, room=f"conv_{msg['conversa_id']}")
+    
+    return jsonify({'status': 'ok', 'mensagem': msg_dict}), 200
+
+
+@app.route('/api/conversas/<int:id>/lixeira', methods=['GET'])
+@login_required
+def lixeira_mensagens(id):
+    uid = get_user_id()
+    db = get_db_g()
+    msgs = db.execute('''
+        SELECT m.*, u.nome as autor_nome, u.foto as autor_foto, u.username as autor_username
+        FROM mensagens m 
+        JOIN usuarios u ON m.usuario_id = u.id
+        WHERE m.conversa_id = ? AND m.usuario_id = ? AND m.excluido_em IS NOT NULL
+        ORDER BY m.excluido_em DESC
+    ''', (id, uid)).fetchall()
+    return jsonify([dict(m) for m in msgs])
 
 
 @app.route('/api/conversas/<int:id>/pin', methods=['POST'])

@@ -79,6 +79,7 @@ def init_db():
             media_url TEXT DEFAULT '',
             reply_to_id INTEGER,
             criado_em TEXT DEFAULT (datetime('now')),
+            excluido_em TEXT DEFAULT NULL,
             FOREIGN KEY (conversa_id) REFERENCES conversas(id) ON DELETE CASCADE,
             FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE CASCADE,
             FOREIGN KEY (reply_to_id) REFERENCES mensagens(id) ON DELETE SET NULL,
@@ -127,6 +128,7 @@ def init_db():
         ('conversas', 'wallpaper', "TEXT DEFAULT ''"),
         ('conversas', 'pinned_message_id', 'INTEGER'),
         ('grupo_subtopicos', 'pinned_message_id', 'INTEGER'),
+        ('mensagens', 'excluido_em', 'TEXT DEFAULT NULL'),
     ]
     for table, col, col_type in migrations:
         try:

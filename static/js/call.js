@@ -7,6 +7,9 @@ let activeCalls = {}; // map de participantId => callObject
 let localStream = null;
 let isJoined = false;
 
+// FIX: fila para chamadas recebidas antes da mídia local estar pronta
+let pendingCalls = [];
+
 let isInCall = false;
 window.isInCall = false;
 let isCameraOn = false;
@@ -15,6 +18,15 @@ let isMuted = false;
 
 let callSourceId = null;
 window.callSourceId = null;
+
+// Indicador "em chamada" na lista de participantes (Task 1)
+const usersInCall = new Set();
+window.usersInCall = usersInCall;
+
+// FIX: estado de reconexão PeerJS — backoff exponencial e limite de tentativas
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 5;
+let reconnectTimer = null;
 
 // Ringtone setup
 let ringtoneCtx = null;
@@ -56,6 +68,11 @@ window.handleIncomingSignal = async function (sinal) {
         showToast(`${caller?.nome || 'Usuário'} recusou a chamada.`, 'info');
     } else if (tipo === 'state') {
         updateRemoteParticipantState(remetente_id, dados);
+    } else if (tipo === 'in_call') {
+        // Task 1: indicador de participante em chamada na sidebar
+        markParticipantInCall(dados.userId, true);
+    } else if (tipo === 'call_ended') {
+        markParticipantInCall(dados.userId, false);
     }
 }
 
@@ -82,27 +99,99 @@ function broadcastStateChange() {
 }
 
 // ══════════════════════════════════════════════
-//  PeerJS Init & Mesh Flow
+//  Task 1: Indicador "Em chamada" na lista de participantes
+// ══════════════════════════════════════════════
+const CALL_BADGE_SVG = '<path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/>';
+
+function markParticipantInCall(userId, isActive) {
+    if (userId == null || userId === undefined) return;
+    const id = String(userId);
+    const list = document.getElementById('participantsList');
+    if (!list) return;
+    // Busca por data-member-id (sidebar) — defensivo: falha silenciosa se não achar
+    let el = list.querySelector(`[data-member-id="${id}"]`);
+    if (!el) return;
+
+    if (isActive) {
+        usersInCall.add(id);
+        el.classList.add('member-in-call');
+        let badge = document.getElementById(`call-badge-${id}`);
+        if (!badge) {
+            badge = document.createElement('span');
+            badge.className = 'call-status-badge';
+            badge.id = `call-badge-${id}`;
+            badge.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">${CALL_BADGE_SVG}</svg> Em chamada`;
+            const info = el.querySelector('.participant-info');
+            if (info) info.appendChild(badge);
+        }
+        list.insertBefore(el, list.firstChild);
+    } else {
+        usersInCall.delete(id);
+        el.classList.remove('member-in-call');
+        const badge = document.getElementById(`call-badge-${id}`);
+        if (badge) badge.remove();
+        // Restaurar ordem natural: reordena pela lógica da lista (ordem alfabética)
+        if (typeof window.renderParticipantsSidebar === 'function' && window.conversaAtual) {
+            window.renderParticipantsSidebar(window.conversaAtual);
+            if (typeof window.reapplyParticipantsInCall === 'function') {
+                window.reapplyParticipantsInCall();
+            }
+        }
+    }
+}
+
+// Reaplica badge/class para todos em usersInCall após re-render da lista (ex.: troca de conversa)
+window.reapplyParticipantsInCall = function reapplyParticipantsInCall() {
+    const list = document.getElementById('participantsList');
+    if (!list) return;
+    usersInCall.forEach((id) => {
+        const el = list.querySelector(`[data-member-id="${id}"]`);
+        if (!el) return;
+        el.classList.add('member-in-call');
+        let badge = document.getElementById(`call-badge-${id}`);
+        if (!badge) {
+            badge = document.createElement('span');
+            badge.className = 'call-status-badge';
+            badge.id = `call-badge-${id}`;
+            badge.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">${CALL_BADGE_SVG}</svg> Em chamada`;
+            const info = el.querySelector('.participant-info');
+            if (info) info.appendChild(badge);
+        }
+        list.insertBefore(el, list.firstChild);
+    });
+};
+
+// ══════════════════════════════════════════════
+//  PeerJS Init & Mesh Flow (FIX: backoff + max retry + pendingCalls)
 // ══════════════════════════════════════════════
 function initPeer() {
-    if (peer) return;
+    // FIX: verifica estado real antes de reusar o peer
+    if (peer && !peer.destroyed && peer.open) return;
+    if (peer && !peer.destroyed) {
+        peer.destroy();
+    }
+    peer = null;
+    reconnectAttempts = 0;
+    _createPeer();
+}
 
+function _createPeer() {
     // A Mágica do 4G: Servidores TURN e STUN Públicos Grátis
     const customConfig = {
         iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
             { urls: 'stun:stun1.l.google.com:19302' },
-            { 
+            {
                 urls: 'turn:global.relay.metered.ca:80',
                 username: 'openrelayproject',
                 credential: 'openrelayproject'
             },
-            { 
+            {
                 urls: 'turn:global.relay.metered.ca:443',
                 username: 'openrelayproject',
                 credential: 'openrelayproject'
             },
-            { 
+            {
                 urls: 'turn:global.relay.metered.ca:443?transport=tcp',
                 username: 'openrelayproject',
                 credential: 'openrelayproject'
@@ -110,47 +199,67 @@ function initPeer() {
         ]
     };
 
-    // Usa o ID do banco de dados como ID do Peer (facilita o p2p!)
     peer = new Peer(String(currentUser.id), {
         host: window.location.hostname,
         port: 9000,
         path: '/myapp',
         secure: window.location.protocol === 'https:',
         config: customConfig,
-        debug: 1
+        debug: 1,
+        pingInterval: 5000 // FIX: keep-alive para evitar timeout silencioso do WS
     });
 
     peer.on('open', (id) => {
-        console.log('[PeerJS] Conectado ao servidor de sinalização. Meu ID:', id);
+        console.log('[PeerJS] Conectado. Meu ID:', id);
+        reconnectAttempts = 0; // FIX: reseta contador ao conectar com sucesso
+        if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
     });
 
     peer.on('disconnected', () => {
-        console.warn('[PeerJS] Desconectado do servidor de sinalização. Tentando reconectar...');
-        if (peer && !peer.destroyed) {
-            peer.reconnect();
+        // FIX: backoff exponencial com limite de tentativas — só reconecta se estiver em chamada
+        if (!isInCall) {
+            console.warn('[PeerJS] Desconectado. Não está em chamada, não reconectando.');
+            return;
         }
+        if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+            console.error('[PeerJS] Máximo de reconexões atingido. Encerrando chamada.');
+            showToast('Conexão com o servidor perdida. A chamada foi encerrada.', 'error');
+            endCall(false);
+            return;
+        }
+        const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
+        reconnectAttempts++;
+        console.warn(`[PeerJS] Desconectado. Tentativa ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} em ${delay}ms...`);
+        reconnectTimer = setTimeout(() => {
+            if (peer && !peer.destroyed) {
+                peer.reconnect();
+            } else {
+                _createPeer(); // FIX: recria do zero se o objeto peer foi destruído
+            }
+        }, delay);
     });
 
-    // Recebendo ligação Mesh (Ponto a Ponto direta)
     peer.on('call', (call) => {
         console.log('[PeerJS] Recebendo chamada Mesh de:', call.peer);
-        // Atende automaticamente se já estivermos na sala rolando as streams
         if (isInCall && localStream) {
             call.answer(localStream);
             handleCallStream(call);
-            if (call.metadata) {
-                updateRemoteParticipantState(call.peer, call.metadata);
-            }
+            if (call.metadata) updateRemoteParticipantState(call.peer, call.metadata);
+        } else if (isInCall && !localStream) {
+            // FIX: fila de chamadas enquanto a mídia local ainda não está pronta
+            pendingCalls.push(call);
         } else {
-            // Se eu não cliquei em Atender visualmente, o PeerJS fecha a stream surpresa
-            // O Ringtone visual foi disparado pelo Socket, quando o user aceitar no botão,
-            // sua inicialização passará por 'joinCall' ligando devolta pra todo mundo reatando a malha.
             call.close();
         }
     });
 
     peer.on('error', (err) => {
-        console.error('[PeerJS] Erro crítico:', err);
+        // FIX: não loga erros de reconexão como críticos — são esperados
+        if (err.type === 'disconnected' || err.type === 'network') {
+            console.warn('[PeerJS] Erro de rede (esperado durante reconexão):', err.message);
+        } else {
+            console.error('[PeerJS] Erro crítico:', err);
+        }
     });
 }
 
@@ -198,6 +307,14 @@ async function getLocalMedia() {
         }
 
         updateLocalVideo();
+        // FIX: atende chamadas que chegaram enquanto a mídia local não estava pronta
+        if (pendingCalls.length > 0) {
+            pendingCalls.forEach((pendingCall) => {
+                pendingCall.answer(localStream);
+                handleCallStream(pendingCall);
+            });
+            pendingCalls = [];
+        }
         return true;
     } catch (err) {
         console.error('[PeerJS/WebRTC] Falha ao capturar media do usuario:', err);
@@ -424,10 +541,18 @@ async function joinCall() {
     updateCallStatusText('Conectado à nuvem p2p..');
     isJoined = true;
 
+    // Task 1: indicador local "em chamada" na lista de participantes
+    markParticipantInCall(currentUser.id, true);
+
     const conv = window.conversaAtual;
     if (conv) {
         const others = conv.membros.filter(m => m.id !== currentUser.id);
-        
+
+        // Task 1: broadcast in_call para todos os membros
+        for (const m of others) {
+            await sendCallSignal(m.id, 'in_call', { userId: currentUser.id }, callSourceId);
+        }
+
         // 1. Avisa os outros que estou ligando (Sinal Visual)
         for (const m of others) {
             await sendCallSignal(m.id, 'join', {}, callSourceId);
@@ -449,16 +574,28 @@ async function joinCall() {
 async function endCall(sendSignal = true) {
     if (sendSignal && isInCall && window.conversaAtual) {
         const others = window.conversaAtual.membros.filter(m => m.id !== currentUser.id);
+        // Task 1: broadcast call_ended para todos os membros
+        for (const m of others) {
+            await sendCallSignal(m.id, 'call_ended', { userId: currentUser.id }, callSourceId);
+        }
         for (const m of others) {
             await sendCallSignal(m.id, 'leave', {}, callSourceId);
         }
     }
 
+    // Task 1: remove indicador local "em chamada"
+    markParticipantInCall(currentUser.id, false);
+
+    // FIX: limpa estado de reconexão e fila de chamadas pendentes
+    reconnectAttempts = 0;
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    pendingCalls = [];
+
     if (localStream) {
         localStream.getTracks().forEach(t => t.stop());
         localStream = null;
     }
-    
+
     Object.values(activeCalls).forEach(call => call.close());
     activeCalls = {};
 
@@ -470,6 +607,7 @@ async function endCall(sendSignal = true) {
 
     hideCallUI();
 
+    // FIX: NÃO destruir o peer no endCall — apenas fechar as chamadas ativas; reutilizado na próxima chamada
     if (window.performSync) window.performSync();
 }
 

@@ -2712,12 +2712,55 @@ body::before {
 
 .bio-card-bio {
     font-size: 0.95rem;
-    line-height: 1.5;
-    color: var(--text-secondary);
-    background: rgba(255,255,255,0.03);
-    padding: 1rem;
-    border-radius: var(--radius-md);
+        border-radius: var(--radius-md);
     margin-top: 1rem;
+}
+
+/* Lixeira Modal */
+.lixeira-list {
+    max-height: 400px;
+    overflow-y: auto;
+}
+.lixeira-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px;
+    border-bottom: 1px solid var(--border-color);
+    transition: background 0.2s;
+}
+.lixeira-item:hover {
+    background: rgba(255,255,255,0.05);
+}
+.lixeira-content {
+    flex: 1;
+    margin-right: 15px;
+    overflow: hidden;
+}
+.lixeira-text {
+    font-size: 0.9em;
+    color: var(--text-color);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.lixeira-meta {
+    font-size: 0.75em;
+    color: var(--text-muted);
+    margin-top: 4px;
+}
+.btn-restaurar {
+    padding: 6px 12px;
+    background: var(--accent-color);
+    color: white;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.8em;
+    font-weight: 500;
+}
+.btn-restaurar:hover {
+    filter: brightness(1.1);
 }
 
 .participant-item {
@@ -3511,6 +3554,35 @@ body::before {
 .participant-active-call .participant-status {
     color: #10b981 !important;
     font-weight: 600;
+}
+
+/* Task 1: indicador "em chamada" na lista de participantes (call.js) */
+.member-in-call {
+    order: -1;
+    background: rgba(34, 197, 94, 0.08);
+    border-left: 3px solid #22c55e;
+    border-radius: 8px;
+    transition: all 0.3s ease;
+}
+
+.call-status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    color: #22c55e;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    animation: callPulse 1.8s ease-in-out infinite;
+}
+
+.call-status-badge svg {
+    animation: callPulse 1.8s ease-in-out infinite;
+}
+
+@keyframes callPulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
 }
 
 .pulse-call-btn {
