@@ -27,6 +27,8 @@ window.usersInCall = usersInCall;
 let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 5;
 let reconnectTimer = null;
+// FIX: diferencia "nunca conectou" (falha rápida) de "desconectou em chamada" (backoff)
+let peerHadOpenOnce = false;
 
 // Ringtone setup
 let ringtoneCtx = null;
@@ -172,6 +174,7 @@ function initPeer() {
     }
     peer = null;
     reconnectAttempts = 0;
+    peerHadOpenOnce = false;
     _createPeer();
 }
 
@@ -211,16 +214,25 @@ function _createPeer() {
 
     peer.on('open', (id) => {
         console.log('[PeerJS] Conectado. Meu ID:', id);
-        reconnectAttempts = 0; // FIX: reseta contador ao conectar com sucesso
+        peerHadOpenOnce = true; // FIX: marca que já conectou alguma vez (reconexão faz sentido)
+        reconnectAttempts = 0;
         if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
     });
 
     peer.on('disconnected', () => {
-        // FIX: backoff exponencial com limite de tentativas — só reconecta se estiver em chamada
         if (!isInCall) {
             console.warn('[PeerJS] Desconectado. Não está em chamada, não reconectando.');
             return;
         }
+        // FIX: falha rápida na primeira conexão — servidor inacessível (ex.: porta 9000 fechada / Tailscale)
+        if (!peerHadOpenOnce) {
+            console.error('[PeerJS] Servidor de sinalização inacessível (conexão inicial falhou).');
+            if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+            showToast('Servidor de chamadas indisponível (porta 9000). Verifique se o PeerJS está em execução.', 'error');
+            endCall(false);
+            return;
+        }
+        // FIX: backoff exponencial só quando já tinha conectado antes (reconexão)
         if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
             console.error('[PeerJS] Máximo de reconexões atingido. Encerrando chamada.');
             showToast('Conexão com o servidor perdida. A chamada foi encerrada.', 'error');
@@ -234,7 +246,7 @@ function _createPeer() {
             if (peer && !peer.destroyed) {
                 peer.reconnect();
             } else {
-                _createPeer(); // FIX: recria do zero se o objeto peer foi destruído
+                _createPeer();
             }
         }, delay);
     });
@@ -254,9 +266,13 @@ function _createPeer() {
     });
 
     peer.on('error', (err) => {
-        // FIX: não loga erros de reconexão como críticos — são esperados
         if (err.type === 'disconnected' || err.type === 'network') {
-            console.warn('[PeerJS] Erro de rede (esperado durante reconexão):', err.message);
+            // FIX: se nunca conectou, evita loop de reconexão — disconnected já vai encerrar a chamada
+            if (!peerHadOpenOnce && isInCall) {
+                console.warn('[PeerJS] Servidor inacessível (conexão inicial):', err.message);
+            } else {
+                console.warn('[PeerJS] Erro de rede (esperado durante reconexão):', err.message);
+            }
         } else {
             console.error('[PeerJS] Erro crítico:', err);
         }
