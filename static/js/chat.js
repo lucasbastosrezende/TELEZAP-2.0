@@ -56,32 +56,11 @@ function renderConversasList() {
         return emojiCount >= 1 && emojiCount <= 3;
     };
 
-    const parseAnimatedEmojis = (text, large = false) => {
-        if (!text) return text;
-        
-        // Regex to find ANY emoji in the text
-        const regex = /([\u{1f300}-\u{1f5ff}\u{1f900}-\u{1f9ff}\u{1f600}-\u{1f64f}\u{1f680}-\u{1f6ff}\u{2600}-\u{26ff}\u{2700}-\u{27bf}\u{1f1e6}-\u{1f1ff}\u{1f191}-\u{1f251}\u{1f004}\u{1f0cf}\u{1f170}-\u{1f171}\u{1f17e}-\u{1f17f}\u{1f18e}\u{3030}\u{2b50}\u{2b55}\u{2934}-\u{2935}\u{2b05}-\u{2b07}\u{2b1b}-\u{2b1c}\u{3297}\u{3299}\u{303d}\u{00a9}\u{00ae}\u{2122}\u{23f3}\u{24c2}\u{23e9}-\u{23ef}\u{25b6}\u{23f8}-\u{23fa}\u{200d}\ufe0f]+)/gu;
-        
-        return text.replace(regex, (match) => {
-            // Convert emoji to hex code points
-            let hexSeq = [];
-            for (let char of match) {
-                let code = char.codePointAt(0);
-                if (code !== 0xFE0F) { // Ignore Variation Selector 16
-                    hexSeq.push(code.toString(16).toLowerCase());
-                }
-            }
-            const hexStr = hexSeq.join('_');
-            const classSize = large ? 'animated-emoji-large' : 'animated-emoji';
-            // Use fallback to the native emoji text if not found in Noto CDN
-            return `<img src="https://fonts.gstatic.com/s/e/notoemoji/latest/${hexStr}/512.webp" alt="${match}" class="${classSize}" onerror="this.onerror=null; this.replaceWith(this.alt);">`;
-        });
-    };
+    // parseAnimatedEmojis removed for performance optimization (using native emojis)
 
     container.innerHTML = conversas.map(c => {
         const isActive = conversaAtual && conversaAtual.id === c.id;
-        const rawPreview = c.ultima_msg ? c.ultima_msg.substring(0, 40) + (c.ultima_msg.length > 40 ? '...' : '') : 'Sem mensagens';
-        const preview = parseAnimatedEmojis(rawPreview, false);
+        const preview = c.ultima_msg ? c.ultima_msg.substring(0, 40) + (c.ultima_msg.length > 40 ? '...' : '') : 'Sem mensagens';
         const isGroup = c.tipo === 'grupo';
         const initial = c.display_nome ? c.display_nome.charAt(0).toUpperCase() : '?';
         const unread = (typeof unreadCounts !== 'undefined' ? unreadCounts[c.id] : 0) || 0;
@@ -510,7 +489,7 @@ function renderSingleMessage(msg, isOptimistic = false) {
         ${msg.conteudo ? (() => {
             const rawContent = linkify(escapeHtml(msg.conteudo));
             const shouldBeLarge = isEmojiOnly(msg.conteudo);
-            return `<div class="msg-content ${shouldBeLarge ? 'msg-emoji-only' : ''}">${parseAnimatedEmojis(rawContent, shouldBeLarge)}</div>`;
+            return `<div class="msg-content ${shouldBeLarge ? 'msg-emoji-only' : ''}">${rawContent}</div>`;
         })() : ''}
         <div class="msg-time">${formatTime(msg.criado_em || new Date().toISOString())}${isOptimistic ? ' ⏳' : ''}</div>
     `;
@@ -861,19 +840,10 @@ function renderEmojiPicker() {
     if (!container) return;
     
     container.innerHTML = commonEmojis.map(emojiChar => {
-        let hexStr = '';
-        for (const char of emojiChar) {
-            let hex = char.codePointAt(0).toString(16);
-            if (hex !== 'fe0f') { // strip variation selector
-                hexStr += (hexStr ? '_' : '') + hex;
-            }
-        }
-        
-        const url = `https://fonts.gstatic.com/s/e/notoemoji/latest/${hexStr}/512.webp`;
         return `
-            <div onclick="selectEmoji('${emojiChar}')" style="cursor: pointer; padding: 0.2rem; border-radius: 8px; transition: background 0.2s; display: flex; align-items: center; justify-content: center;"
+            <div onclick="selectEmoji('${emojiChar}')" style="cursor: pointer; padding: 0.2rem; border-radius: 8px; transition: background 0.2s; display: flex; align-items: center; justify-content: center; font-size: 1.5rem;"
                  onmouseover="this.style.background='rgba(255,255,255,0.1)'" onmouseout="this.style.background='transparent'">
-                <img src="${url}" alt="${emojiChar}" style="width: 32px; height: 32px;" onerror="this.onerror=null; this.replaceWith(this.alt);">
+                ${emojiChar}
             </div>
         `;
     }).join('');

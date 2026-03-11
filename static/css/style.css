@@ -2160,35 +2160,14 @@ body::before {
     padding-bottom: 0.25rem;
 }
 
-/* ── Animated Emojis ── */
-.animated-emoji {
-    width: 24px;
-    height: 24px;
-    vertical-align: middle;
-    display: inline-block;
-    margin: 0 1px;
-    pointer-events: none;
-    user-select: none;
-}
-
-.animated-emoji-large {
-    width: 64px;
-    height: 64px;
-    vertical-align: middle;
-    display: inline-block;
-    margin: 4px;
-    pointer-events: none;
-    user-select: none;
-}
-
+/* ── Optimized Emojis ── */
 .msg-emoji-only {
     background: transparent !important;
     padding: 0 !important;
     border: none !important;
     box-shadow: none !important;
-}
-.msg-emoji-only .animated-emoji-large {
-    filter: drop-shadow(0 4px 6px rgba(0,0,0,0.3));
+    font-size: 3rem;
+    line-height: 1.2;
 }
 
 .subtopics-tabs::-webkit-scrollbar {

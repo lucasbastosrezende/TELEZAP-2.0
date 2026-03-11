@@ -1337,5 +1337,5 @@ def atualizar_meta():
 #  Iniciar o servidor
 # ══════════════════════════════════════════════
 if __name__ == '__main__':
-    print("🦉 TocaDoConhecimento rodando em http://localhost:3000")
+    print("TocaDoConhecimento rodando em http://localhost:3000")
     app.run(host='0.0.0.0', port=3000, debug=False)
