@@ -71,6 +71,7 @@ socket.on('pinned_update', (data) => {
             const refreshed = conversas.find(c => c.id === conversaAtual.id);
             if (refreshed) {
                 conversaAtual = refreshed;
+                window.conversaAtual = conversaAtual;
                 renderPinnedMessageBar();
             }
         });
@@ -148,6 +149,7 @@ async function abrirConversa(id) {
     if (!conv) return;
     if (conversaAtual) socket.emit('leave_conv', { conversa_id: conversaAtual.id });
     conversaAtual = conv;
+    window.conversaAtual = conversaAtual;
     socket.emit('join_conv', { conversa_id: id });
     lastMsgId = 0;
     subtopicAtual = null;
@@ -1380,6 +1382,7 @@ async function excluirChat(id, nome) {
         showToast('Conversa excluída', 'success');
         if (conversaAtual && conversaAtual.id === id) {
             conversaAtual = null;
+            window.conversaAtual = null;
             document.querySelector('.chat-placeholder').classList.remove('hidden');
             document.getElementById('chatHeader').classList.add('hidden');
             document.getElementById('chatMessages').classList.add('hidden');
@@ -1401,6 +1404,7 @@ async function excluirGrupoInteiro() {
         showToast('Grupo excluído permanentemente', 'success');
         closeModal();
         conversaAtual = null;
+        window.conversaAtual = null;
         document.querySelector('.chat-placeholder').classList.remove('hidden');
         document.getElementById('chatHeader').classList.add('hidden');
         document.getElementById('chatMessages').classList.add('hidden');
@@ -1431,6 +1435,7 @@ async function salvarGrupo() {
 // ── Mobile Back Button ──
 document.getElementById('btnBackChat').addEventListener('click', () => {
     conversaAtual = null;
+    window.conversaAtual = null;
     document.querySelector('.chat-placeholder').classList.remove('hidden');
     document.getElementById('chatHeader').classList.add('hidden');
     document.getElementById('chatMessages').classList.add('hidden');
