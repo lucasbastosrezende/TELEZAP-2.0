@@ -23,13 +23,19 @@ const isEmojiOnly = (str) => {
 
 // ── SocketIO Init ──
 const socket = io();
+window.socket = socket;
 
-socket.on('connect', () => {
-    console.log('[Socket] Conectado ao servidor');
-    if (typeof currentUser !== 'undefined' && currentUser) {
+function joinUserRoom() {
+    if (socket.connected && typeof currentUser !== 'undefined' && currentUser) {
         socket.emit('join', { user_id: currentUser.id });
         if (conversaAtual) socket.emit('join_conv', { conversa_id: conversaAtual.id });
     }
+}
+window.joinUserRoom = joinUserRoom;
+
+socket.on('connect', () => {
+    console.log('[Socket] Conectado ao servidor');
+    joinUserRoom();
 });
 
 socket.on('new_message', (msg) => {

@@ -89,6 +89,7 @@ window.handleIncomingSignal = async function (sinal) {
     if (tipo === 'join') {
         markParticipantInCall(remetente_id, true);
         if (!isInCall) {
+            window._pendingIncomingCallData = { callConv, caller: resolvedCaller, dados };
             showIncomingCallAlert(callConv, resolvedCaller, dados);
         }
     } else if (tipo === 'leave') {
@@ -201,34 +202,20 @@ function initPeer() {
 }
 
 function _createPeer() {
+    // FIX: máximo 2 servidores STUN (5+ prejudica descoberta WebRTC)
     const customConfig = {
         iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' },
-            {
-                urls: 'turn:global.relay.metered.ca:80',
-                username: 'openrelayproject',
-                credential: 'openrelayproject'
-            },
-            {
-                urls: 'turn:global.relay.metered.ca:443',
-                username: 'openrelayproject',
-                credential: 'openrelayproject'
-            },
-            {
-                urls: 'turn:global.relay.metered.ca:443?transport=tcp',
-                username: 'openrelayproject',
-                credential: 'openrelayproject'
-            }
+            { urls: 'stun:stun1.l.google.com:19302' }
         ]
     };
 
-    // FIX: fallback — se servidor local (porta 9000) falhou, usa servidor em nuvem PeerJS
     const useCloud = peerUseCloudFallback;
     const peerOptions = {
         host: useCloud ? '0.peerjs.com' : window.location.hostname,
         port: useCloud ? 443 : 9000,
         path: useCloud ? '/' : '/myapp',
+        key: 'peerjs',
         secure: useCloud ? true : (window.location.protocol === 'https:'),
         config: customConfig,
         debug: 1,
@@ -252,8 +239,16 @@ function _createPeer() {
     });
 
     peer.on('disconnected', () => {
+        // FIX: tenta reconectar sempre (evita desconexão silenciosa)
         if (!isInCall) {
-            console.warn('[PeerJS] Desconectado. Não está em chamada, não reconectando.');
+            if (peer && !peer.destroyed && reconnectAttempts < 2) {
+                reconnectAttempts++;
+                const delay = 2000;
+                console.warn(`[PeerJS] Desconectado. Reconectando em ${delay}ms...`);
+                setTimeout(() => {
+                    if (peer && !peer.destroyed) peer.reconnect();
+                }, delay);
+            }
             return;
         }
         // FIX: falha na primeira conexão — tenta servidor em nuvem antes de desistir
@@ -633,13 +628,14 @@ async function joinCall() {
             await sendCallSignal(m.id, 'in_call', { userId: currentUser.id }, callSourceId);
         }
 
-        // 1. Avisa os outros que estou ligando (Sinal Visual) — inclui nome/foto para quem não tem a conversa carregada
+        // 1. Avisa os outros — inclui useCloud para callee usar o mesmo servidor PeerJS
         for (const m of others) {
             await sendCallSignal(m.id, 'join', {
                 callerName: currentUser.nome,
                 callerPhoto: currentUser.foto || null,
                 convName: conv.nome || null,
-                convTipo: conv.tipo
+                convTipo: conv.tipo,
+                useCloud: peerUseCloudFallback
             }, callSourceId);
         }
 
@@ -911,6 +907,7 @@ function showIncomingCallAlert(callConv, callerMember, dados) {
     document.getElementById('btnAcceptCall').onclick = async () => {
         dismissIncomingCall();
         window.callSourceId = callConv.id;
+        if (dados && dados.useCloud) peerUseCloudFallback = true;
         if (!window.conversaAtual || window.conversaAtual.id !== callConv.id) {
             if (typeof abrirConversa === 'function') await abrirConversa(callConv.id);
         }

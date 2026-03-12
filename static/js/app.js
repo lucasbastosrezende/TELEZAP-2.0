@@ -82,7 +82,7 @@ function showApp(user) {
     document.getElementById('authScreen').classList.add('hidden');
     const appWrapper = document.getElementById('appWrapper');
     appWrapper.classList.remove('hidden');
-    
+    if (typeof joinUserRoom === 'function') joinUserRoom();
     updateProfileUI(user);
     // FIX: Removido startSyncPolling() daqui — navigateTo('chat') abaixo já
     // dispara o evento pageChange que inicia o polling via chat.js.
