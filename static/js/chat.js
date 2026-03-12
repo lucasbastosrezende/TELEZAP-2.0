@@ -10,11 +10,13 @@ let subtopicos = [];
 let subtopicAtual = null; // null = "Geral"
 let replyState = null; // { id, author, text }
 
+// PERF FIX: cache de mensagens com limite de tamanho e TTL para evitar vazamento de memória
 // In-memory cache por conversa para mensagens (SWR-style)
 // Estrutura: { [conversaId]: { messages: [], lastFetchedAt: number, lastMsgId: number } }
-const messageCache = {};
-const MESSAGE_CACHE_TTL = 30000; // 30s
-const MAX_RENDERED_MESSAGES = 200;
+const messageCache = {}; // PERF FIX: escopo único global, controlado pelos helpers abaixo
+const MESSAGE_CACHE_TTL = 60000; // PERF FIX: TTL aumentado para 60s para reduzir re-fetching sem crescer demais
+const MESSAGE_CACHE_MAX_CONVS = 20; // PERF FIX: máximo de conversas em cache (evita crescimento infinito)
+const MAX_RENDERED_MESSAGES = 50; // PERF FIX: limita DOM a 50 mensagens visíveis por conversa (virtual scroll simples)
 
 // ── Helpers & Utilities (Global Scope) ──
 const isEmojiOnly = (str) => {
@@ -553,6 +555,30 @@ async function deletarSubtopico(id) {
 
 // ── Message Cache Helpers (SWR-style) ──
 function getMessageCacheEntry(conversaId) {
+    // PERF FIX: aplica política LRU simples + TTL sempre que acessa a entrada
+    const now = Date.now();
+
+    // Limpa entradas expiradas e aplica limite máximo de conversas em cache
+    const keys = Object.keys(messageCache);
+    if (keys.length > 0) {
+        // Remove entradas expiradas
+        for (const key of keys) {
+            const entry = messageCache[key];
+            if (entry && entry.lastFetchedAt && (now - entry.lastFetchedAt) > MESSAGE_CACHE_TTL) {
+                delete messageCache[key];
+            }
+        }
+        // Recalcula após remoção por TTL
+        const remainingKeys = Object.keys(messageCache);
+        if (remainingKeys.length > MESSAGE_CACHE_MAX_CONVS) {
+            // PERF FIX: remove as conversas menos recentes (LRU simples usando lastFetchedAt)
+            remainingKeys
+                .sort((a, b) => (messageCache[a].lastFetchedAt || 0) - (messageCache[b].lastFetchedAt || 0))
+                .slice(0, remainingKeys.length - MESSAGE_CACHE_MAX_CONVS)
+                .forEach(k => delete messageCache[k]);
+        }
+    }
+
     if (!messageCache[conversaId]) {
         messageCache[conversaId] = { messages: [], lastFetchedAt: 0, lastMsgId: 0 };
     }
