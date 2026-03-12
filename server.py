@@ -129,6 +129,70 @@ def index():
 
 
 # ══════════════════════════════════════════════
+#  WebRTC / PeerJS runtime config
+# ══════════════════════════════════════════════
+@app.route('/api/webrtc/config', methods=['GET'])
+def webrtc_config():
+    """
+    Runtime config for the browser (PeerJS + ICE servers).
+
+    Why: static JS can't read env; 4G/CGNAT needs TURN; peers must NEVER silently
+    fall back to public PeerJS cloud, otherwise they end up on different brokers.
+    """
+    # PeerJS broker (signaling) settings
+    peer_host = os.getenv('PEERJS_HOST', '').strip() or request.host.split(':')[0]
+    peer_path = os.getenv('PEERJS_PATH', '/myapp').strip() or '/myapp'
+
+    try:
+        peer_port = int(os.getenv('PEERJS_PORT', '9000'))
+    except ValueError:
+        peer_port = 9000
+
+    # If the app itself is behind HTTPS/WSS, clients should use secure websockets.
+    peer_secure_env = os.getenv('PEERJS_SECURE', '').strip().lower()
+    if peer_secure_env in ('1', 'true', 'yes', 'on'):
+        peer_secure = True
+    elif peer_secure_env in ('0', 'false', 'no', 'off'):
+        peer_secure = False
+    else:
+        peer_secure = request.is_secure
+
+    # ICE servers (STUN + optional TURN)
+    ice_servers = [
+        {'urls': 'stun:stun.l.google.com:19302'},
+        {'urls': 'stun:stun1.l.google.com:19302'},
+    ]
+
+    # TURN_URLS supports comma-separated values (turn:..., turns:...)
+    turn_urls_raw = os.getenv('TURN_URLS', '').strip()
+    turn_username = os.getenv('TURN_USERNAME', '').strip()
+    turn_credential = os.getenv('TURN_CREDENTIAL', '').strip()
+
+    if turn_urls_raw and turn_username and turn_credential:
+        turn_urls = [u.strip() for u in turn_urls_raw.split(',') if u.strip()]
+        if turn_urls:
+            ice_servers.append({
+                'urls': turn_urls if len(turn_urls) > 1 else turn_urls[0],
+                'username': turn_username,
+                'credential': turn_credential
+            })
+
+    # NOTE: keep policy "all" so STUN is tried first, TURN used when needed (4G/CGNAT)
+    return jsonify({
+        'peer': {
+            'host': peer_host,
+            'port': peer_port,
+            'path': peer_path,
+            'secure': peer_secure
+        },
+        'rtc': {
+            'iceServers': ice_servers,
+            'iceTransportPolicy': os.getenv('ICE_TRANSPORT_POLICY', 'all').strip() or 'all'
+        }
+    })
+
+
+# ══════════════════════════════════════════════
 #  AUTH — Registro / Login / Logout
 # ══════════════════════════════════════════════
 @app.route('/api/registro', methods=['POST'])
@@ -285,22 +349,17 @@ def listar_usuarios():
 def listar_conversas():
     uid = get_user_id()
     db = get_db_g()
-    # Note: Using a single JOIN on the latest message set is faster than correlated subqueries for many chats
-    conversas_query = '''
-        SELECT c.*, lm.conteudo as ultima_msg, lm.criado_em as ultima_msg_em,
-               (SELECT COUNT(*) FROM mensagens m2 WHERE m2.conversa_id = c.id) as total_msgs
+    # 1) Buscar todas as conversas do usuário (sem subselects caros)
+    conversas = db.execute(
+        '''
+        SELECT c.*
         FROM conversas c
-        LEFT JOIN (
-            SELECT m.conversa_id, m.conteudo, m.criado_em
-            FROM mensagens m
-            WHERE m.id IN (SELECT MAX(id) FROM mensagens GROUP BY conversa_id)
-        ) lm ON c.id = lm.conversa_id
         WHERE c.id IN (
             SELECT conversa_id FROM conversa_membros WHERE usuario_id = ?
         )
-        ORDER BY COALESCE(ultima_msg_em, c.criado_em) DESC
-    '''
-    conversas = db.execute(conversas_query, (uid,)).fetchall()
+        ''',
+        (uid,)
+    ).fetchall()
 
     if not conversas:
         return jsonify([])
@@ -308,7 +367,36 @@ def listar_conversas():
     conv_ids = [c['id'] for c in conversas]
     placeholders = ','.join(['?'] * len(conv_ids))
     
-    # Fetch all members for all returned conversations in a SINGLE query
+    # 2) Buscar último conteúdo de mensagem POR conversa (filtrado só nas conversas do usuário)
+    last_raw = db.execute(f'''
+        SELECT m.conversa_id, m.conteudo, m.criado_em
+        FROM mensagens m
+        JOIN (
+            SELECT conversa_id, MAX(criado_em) AS max_criado
+            FROM mensagens
+            WHERE conversa_id IN ({placeholders})
+            GROUP BY conversa_id
+        ) lm ON m.conversa_id = lm.conversa_id AND m.criado_em = lm.max_criado
+    ''', conv_ids).fetchall()
+
+    last_by_conv: Dict[int, Dict[str, Any]] = {}
+    for row in last_raw:
+        last_by_conv[row['conversa_id']] = {
+            'ultima_msg': row['conteudo'],
+            'ultima_msg_em': row['criado_em'],
+        }
+
+    # 3) Contagem TOTAL de mensagens por conversa (única query agrupada)
+    counts_raw = db.execute(f'''
+        SELECT conversa_id, COUNT(*) as total_msgs
+        FROM mensagens
+        WHERE conversa_id IN ({placeholders})
+        GROUP BY conversa_id
+    ''', conv_ids).fetchall()
+
+    counts_by_conv = {row['conversa_id']: row['total_msgs'] for row in counts_raw}
+
+    # 4) Buscar todos os membros de todas as conversas em UMA query
     membros_raw = db.execute(f'''
         SELECT cm.conversa_id, u.id, u.username, u.nome, u.foto, u.wallpaper, u.bio
         FROM conversa_membros cm 
@@ -324,10 +412,21 @@ def listar_conversas():
             membros_by_conv[cid] = []
         membros_by_conv[cid].append(dict(m))
 
-    result = []
+    # 5) Montar payload enriquecido com último conteúdo, contagem e membros
+    enriched = []
     for c in conversas:
         conv: Dict[str, Any] = dict(c)
         conv['membros'] = membros_by_conv.get(c['id'], [])
+
+        last_info = last_by_conv.get(c['id'])
+        if last_info:
+            conv['ultima_msg'] = last_info['ultima_msg']
+            conv['ultima_msg_em'] = last_info['ultima_msg_em']
+        else:
+            conv['ultima_msg'] = None
+            conv['ultima_msg_em'] = None
+
+        conv['total_msgs'] = counts_by_conv.get(c['id'], 0)
 
         # For direct chats, show the other person's name
         if c['tipo'] == 'direto':
@@ -340,12 +439,18 @@ def listar_conversas():
                 conv['display_nome'] = 'Minhas Anotações' if len(conv['membros']) == 1 else 'Chat'
                 conv['display_foto'] = conv['membros'][0]['foto'] if conv['membros'] else ''
         else:
-            conv['display_nome'] = c['nome'] or 'Grupo'
-            conv['display_foto'] = c['foto'] or ''
+            conv['display_nome'] = c.get('nome') or 'Grupo'
+            conv['display_foto'] = c.get('foto') or ''
 
-        result.append(conv)
+        enriched.append(conv)
 
-    return jsonify(result)
+    # 6) Ordenar em memória por última atividade (equivalente ao ORDER BY antigo)
+    enriched.sort(
+        key=lambda c: (c['ultima_msg_em'] or c['criado_em']),
+        reverse=True,
+    )
+
+    return jsonify(enriched)
 
 
 @app.route('/api/conversas/<int:id>', methods=['GET'])
