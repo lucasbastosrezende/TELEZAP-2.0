@@ -31,6 +31,8 @@ let reconnectTimer = null;
 let peerHadOpenOnce = false;
 // FIX: fallback para servidor em nuvem PeerJS quando o servidor local (porta 9000) está inacessível
 let peerUseCloudFallback = false;
+// FIX: retry periódico para conectar a peers que ainda não entraram na chamada
+let callRetryInterval = null;
 
 // Ringtone setup
 let ringtoneCtx = null;
@@ -312,7 +314,9 @@ function _createPeer() {
             if (peerHadOpenOnce) {
                 console.warn('[PeerJS] Erro de rede (reconexão):', err.message);
             }
-            // Mensagem única e encerramento da chamada ficam em peer.on('disconnected')
+        } else if ((err.message || '').includes('Could not connect to peer')) {
+            // FIX: esperado quando o outro usuário ainda não entrou na chamada — retry automático cobre isso
+            console.warn('[PeerJS] Peer indisponível (aguardando atender):', err.message);
         } else {
             console.error('[PeerJS] Erro crítico:', err);
         }
@@ -640,14 +644,24 @@ async function joinCall() {
         }
 
         // 2. FIX: só o peer com ID numérico MENOR inicia a chamada; o maior apenas responde em peer.on('call')
-        for (const m of others) {
-            const remoteIdNum = Number(m.id);
-            if (isNaN(myIdNum) || isNaN(remoteIdNum) || myIdNum >= remoteIdNum) continue;
-            const call = peer.call(String(m.id), localStream, {
-                metadata: { isMuted: isMuted, isCameraOn: isCameraOn }
-            });
-            if (call) handleCallStream(call);
-        }
+        const tryConnectToPeers = () => {
+            if (!isInCall || !peer || !localStream || !window.conversaAtual) return;
+            const conv = window.conversaAtual;
+            const others = conv.membros.filter(m => m.id !== currentUser.id);
+            for (const m of others) {
+                const remoteIdNum = Number(m.id);
+                if (isNaN(myIdNum) || isNaN(remoteIdNum) || myIdNum >= remoteIdNum) continue;
+                const key = String(m.id);
+                if (activeCalls[key]) continue; // já conectado
+                const call = peer.call(key, localStream, {
+                    metadata: { isMuted: isMuted, isCameraOn: isCameraOn }
+                });
+                if (call) handleCallStream(call);
+            }
+        };
+        tryConnectToPeers();
+        if (callRetryInterval) clearInterval(callRetryInterval);
+        callRetryInterval = setInterval(tryConnectToPeers, 4000);
     }
     if (window.performSync) window.performSync();
 }
@@ -666,10 +680,10 @@ async function endCall(sendSignal = true) {
         }
     }
 
-    // FIX: limpa estado de reconexão e fila de chamadas pendentes
     reconnectAttempts = 0;
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
     pendingCalls = [];
+    if (callRetryInterval) { clearInterval(callRetryInterval); callRetryInterval = null; }
 
     if (localStream) {
         localStream.getTracks().forEach(t => t.stop());
