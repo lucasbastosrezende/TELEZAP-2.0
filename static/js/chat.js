@@ -16,9 +16,21 @@ let replyState = null; // { id, author, text }
 const messageCache = {}; // PERF FIX: escopo único global, controlado pelos helpers abaixo
 const MESSAGE_CACHE_TTL = 60000; // PERF FIX: TTL aumentado para 60s para reduzir re-fetching sem crescer demais
 const MESSAGE_CACHE_MAX_CONVS = 20; // PERF FIX: máximo de conversas em cache (evita crescimento infinito)
-const MAX_RENDERED_MESSAGES = 50; // PERF FIX: limita DOM a 50 mensagens visíveis por conversa (virtual scroll simples)
+const MAX_RENDERED_MESSAGES = 13; // RENDERING LIMIT: Initial load limited to 13 messages per user request
 
 // ── Helpers & Utilities (Global Scope) ──
+function scrollToBottom(force = false) {
+    const container = document.getElementById('chatMessages');
+    if (!container) return;
+    if (force) {
+        container.scrollTop = container.scrollHeight;
+    } else {
+        const wasAtBottom = container.scrollHeight - container.scrollTop <= container.clientHeight + 200;
+        if (wasAtBottom) container.scrollTop = container.scrollHeight;
+    }
+}
+window.scrollToBottom = scrollToBottom;
+
 const isEmojiOnly = (str) => {
     const testStr = (str || '').trim();
     if (!testStr) return false;
@@ -70,9 +82,8 @@ socket.on('new_message', (msg) => {
         cacheEntry.lastFetchedAt = Date.now();
         messageCache[msg.conversa_id] = cacheEntry;
         
+        scrollToBottom();
         const container = document.getElementById('chatMessages');
-        const wasAtBottom = container.scrollHeight - container.scrollTop <= container.clientHeight + 100;
-        if (wasAtBottom) container.scrollTop = container.scrollHeight;
         trimMessageDom(container);
     }
 });
@@ -596,6 +607,7 @@ function renderMessagesFromCache(conversaId) {
     container.innerHTML = '';
     entry.messages.forEach(msg => renderSingleMessage(msg, false));
     lastMsgId = entry.lastMsgId || (entry.messages[entry.messages.length - 1] && entry.messages[entry.messages.length - 1].id) || 0;
+    setTimeout(() => scrollToBottom(true), 10);
     return true;
 }
 
@@ -660,13 +672,18 @@ function renderSingleMessage(msg, isOptimistic = false, returnOnly = false) {
     if (msg.id) bubble.dataset.msgId = msg.id;
     if (isOptimistic) bubble.classList.add('msg-sending');
 
+    const isSticker = msg.media_url && msg.media_url.includes('/static/stickers/');
+    if (isSticker) bubble.classList.add('msg-sticker');
+
     let mediaHtml = '';
     if (msg.media_url) {
         const ext = msg.media_url.split('.').pop().toLowerCase();
         if (['mp4','webm','mov'].includes(ext)) {
-            mediaHtml = `<video src="${msg.media_url}" controls class="msg-media" style="width:100%;max-height:300px;border-radius:8px;margin:0.25rem 0;aspect-ratio:16/9;object-fit:cover" preload="metadata"></video>`;
+            mediaHtml = `<video src="${msg.media_url}" onloadedmetadata="scrollToBottom()" controls class="msg-media" style="width:100%;max-height:300px;border-radius:8px;margin:0.25rem 0;aspect-ratio:16/9;object-fit:cover" preload="metadata"></video>`;
+        } else if (isSticker) {
+            mediaHtml = `<img src="${msg.media_url}" onload="scrollToBottom()" class="msg-sticker-img" loading="lazy" style="cursor:pointer" onclick="abrirLightbox('${msg.media_url}')">`;
         } else {
-            mediaHtml = `<img src="${msg.media_url}" class="msg-media" loading="lazy" style="width:100%;min-height:100px;max-height:300px;border-radius:8px;margin:0.25rem 0;cursor:pointer;object-fit:cover" onclick="window.open('${msg.media_url}','_blank')">`;
+            mediaHtml = `<img src="${msg.media_url}" onload="scrollToBottom()" class="msg-media" loading="lazy" style="width:100%;min-height:100px;max-height:300px;border-radius:8px;margin:0.25rem 0;cursor:pointer;object-fit:cover" onclick="abrirLightbox('${msg.media_url}')">`;
         }
     }
 
@@ -716,12 +733,17 @@ function renderSingleMessage(msg, isOptimistic = false, returnOnly = false) {
     return bubble;
 }
 
-async function loadMensagens() {
+async function loadMensagens(beforeId = null) {
     if (!conversaAtual) return;
     try {
         let endpoint = `/api/conversas/${conversaAtual.id}/mensagens`;
         const params = [];
-        if (lastMsgId) params.push(`after_id=${lastMsgId}`);
+        if (beforeId) {
+            params.push(`before_id=${beforeId}`);
+        } else if (lastMsgId) {
+            params.push(`after_id=${lastMsgId}`);
+        }
+        
         if (subtopicAtual) params.push(`subtopico_id=${subtopicAtual.id}`);
         if (params.length) endpoint += '?' + params.join('&');
 
@@ -730,7 +752,7 @@ async function loadMensagens() {
         const convId = conversaAtual.id;
         const cacheEntry = getMessageCacheEntry(convId);
 
-        if (!lastMsgId) {
+        if (!lastMsgId && !beforeId) {
             container.innerHTML = '';
             if (msgs.length === 0) {
                 const label = subtopicAtual ? `"${subtopicAtual.nome}"` : 'esta conversa';
@@ -738,10 +760,6 @@ async function loadMensagens() {
             }
             // Reset cache on first page load
             cacheEntry.messages = [];
-        }
-
-        if (msgs.length > 0 && container.querySelector('.empty-state')) {
-            container.innerHTML = '';
         }
 
         if (msgs.length > 0) {
@@ -756,21 +774,55 @@ async function loadMensagens() {
                 const bubble = renderSingleMessage(msg, false, true); // true = return element only
                 if (bubble) fragment.appendChild(bubble);
                 if (!existingIds.has(msg.id)) {
-                    cacheEntry.messages.push(msg);
+                    if (beforeId) {
+                        cacheEntry.messages.unshift(msg);
+                    } else {
+                        cacheEntry.messages.push(msg);
+                    }
                 }
-                lastMsgId = msg.id;
+                if (!beforeId) lastMsgId = msg.id;
             });
 
-            cacheEntry.lastMsgId = lastMsgId;
+            if (!beforeId) {
+                cacheEntry.lastMsgId = lastMsgId;
+            }
             cacheEntry.lastFetchedAt = Date.now();
             messageCache[convId] = cacheEntry;
 
-            container.appendChild(fragment);
-            container.scrollTop = container.scrollHeight;
-            trimMessageDom(container);
+            if (beforeId) {
+                const oldHeight = container.scrollHeight;
+                container.prepend(fragment);
+                const newHeight = container.scrollHeight;
+                container.scrollTop = (newHeight - oldHeight); // Keep scroll position relative to content
+            } else {
+                container.appendChild(fragment);
+                scrollToBottom(!lastMsgId); // Force if first load
+            }
+        } else if (!lastMsgId && !beforeId) {
+            scrollToBottom(true);
         }
     } catch (err) {
         console.error('Messages error:', err);
+    }
+}
+
+let loadingOlder = false;
+async function loadOlderMessages() {
+    if (loadingOlder || !conversaAtual) return;
+    
+    // Find oldest message in DOM or cache
+    const container = document.getElementById('chatMessages');
+    const oldestBubble = container.querySelector('.msg-bubble');
+    if (!oldestBubble) return;
+    
+    const oldestId = parseInt(oldestBubble.dataset.msgId);
+    if (!oldestId) return;
+
+    loadingOlder = true;
+    try {
+        await loadMensagens(oldestId);
+    } finally {
+        loadingOlder = false;
     }
 }
 
@@ -862,6 +914,25 @@ async function handleChatFileUpload(file) {
         return;
     }
 
+    // WhatsApp Sticker simple import detection
+    const isPotentialSticker = ext === 'webp' || (['jpg','jpeg','png'].includes(ext) && file.size < 500000);
+    if (isPotentialSticker) {
+        if (confirm(`Deseja importar "${file.name}" como uma FIGURINHA?\n\n(A figurinha será salva na sua coleção e enviada sem balão de texto)`)) {
+            const form = new FormData();
+            form.append('sticker', file);
+            showToast('Importando figurinha...', 'info');
+            try {
+                const res = await fetch('/api/stickers/import', { method:'POST', credentials:'same-origin', body:form });
+                const data = await res.json();
+                if (res.ok) {
+                    showToast('Figurinha importada e pronta! 🌟', 'success');
+                    enviarSticker(data.url);
+                    return; // Stop standard upload
+                }
+            } catch(err) { console.error('Auto-import failed', err); }
+        }
+    }
+
     // Temporary optimistic preview item
     const tempUrl = URL.createObjectURL(file);
     pendingMedia.push({ url: tempUrl, name: file.name, isVideo, uploading: true });
@@ -926,6 +997,7 @@ function renderMediaPreview() {
 }
 
 async function enviarMensagem() {
+    closeAllPanels();
     if (!conversaAtual) return;
     const input = document.getElementById('chatInput');
     const conteudo = input.value.trim();
@@ -1115,6 +1187,87 @@ function selectEmoji(emojiChar) {
     input.selectionEnd = cursorPos + emojiChar.length;
 }
 
+// ══════════════════════════════════════════════
+//  Sticker Picker Integration
+// ══════════════════════════════════════════════
+document.getElementById('btnStickerChat')?.addEventListener('click', () => {
+    const panel = document.getElementById('stickerPanel');
+    const gidPanel = document.getElementById('gifPanel');
+    const emoPanel = document.getElementById('emojiPanel');
+    
+    if (!gidPanel.classList.contains('hidden')) gidPanel.classList.add('hidden');
+    if (!emoPanel.classList.contains('hidden')) emoPanel.classList.add('hidden');
+    
+    panel.classList.toggle('hidden');
+    if (!panel.classList.contains('hidden')) {
+        renderStickerPicker();
+    }
+});
+
+async function renderStickerPicker() {
+    const container = document.getElementById('stickerResults');
+    if (!container) return;
+    
+    try {
+        const stickers = await api('/api/stickers');
+        if (!stickers || stickers.length === 0) {
+            container.innerHTML = '<p style="grid-column: 1/-1; text-align: center; color: var(--text-muted); font-size: 0.8rem; padding: 1rem;">Nenhuma figurinha importada.</p>';
+            return;
+        }
+        
+        container.innerHTML = stickers.map(s => `
+            <div class="sticker-item" onclick="enviarSticker('${s.url}')">
+                <img src="${s.url}" loading="lazy" alt="sticker">
+            </div>
+        `).join('');
+    } catch (err) {
+        container.innerHTML = '<p style="grid-column: 1/-1; text-align: center; color: var(--danger); font-size: 0.8rem;">Erro ao carregar figurinhas.</p>';
+    }
+}
+
+async function enviarSticker(url) {
+    if (!conversaAtual) return;
+    closeAllPanels();
+    
+    // Stickers bypass pendingMedia logic for instant send
+    try {
+        await api(`/api/conversas/${conversaAtual.id}/mensagens`, {
+            method: 'POST',
+            body: { conteudo: '', media_url: url }
+        });
+        // SocketIO will handle the real-time update
+    } catch (err) {
+        showToast('Erro ao enviar figurinha', 'error');
+    }
+}
+
+window.importarStickerDesdeArquivo = async function(input) {
+    const file = input.files[0];
+    if (!file) return;
+    
+    const form = new FormData();
+    form.append('sticker', file);
+    
+    showToast('Importando figurinha...', 'info');
+    try {
+        const res = await fetch('/api/stickers/import', {
+            method: 'POST',
+            credentials: 'same-origin',
+            body: form
+        });
+        const data = await res.json();
+        if (res.ok) {
+            showToast('Figurinha importada! 🌟', 'success');
+            renderStickerPicker();
+        } else {
+            showToast(data.erro || 'Erro na importação', 'error');
+        }
+    } catch (err) {
+        showToast('Erro ao importar', 'error');
+    }
+    input.value = '';
+};
+
 document.getElementById('gifSearchInput').addEventListener('input', (e) => {
     const q = e.target.value.trim();
     clearTimeout(searchTimeout);
@@ -1138,7 +1291,7 @@ function renderTenorResults(gifs) {
         const tinyUrl = g.media[0].tinygif.url;
         const fullUrl = g.media[0].gif.url;
         return `
-        <div style="cursor: pointer; border-radius: var(--radius-sm); overflow: hidden; margin-bottom: 0.5rem; break-inside: avoid; display: block; border: 1px solid rgba(255,255,255,0.05); aspect-ratio: 1/1;">
+        <div style="cursor: pointer; border-radius: var(--radius-sm); overflow: hidden; margin-bottom: 0.5rem; break-inside: avoid; display: block; border: 1px solid rgba(255,255,255,0.05); aspect-ratio: 1/1;" onclick="selectGif('${fullUrl}')">
             <img src="${tinyUrl}" style="width: 100%; height: 100%; object-fit: cover; display: block;" loading="lazy" alt="GIF">
         </div>
         `;
@@ -1146,8 +1299,9 @@ function renderTenorResults(gifs) {
 }
 
 function selectGif(url) {
-    document.getElementById('gifPanel').classList.add('hidden');
-    pendingMedia = url;
+    closeAllPanels();
+    // GIFs bypass standard file upload and go into pendingMedia array
+    pendingMedia = [{ url: url, name: 'Tenor GIF', isVideo: false, uploading: false }];
     enviarMensagem();
 }
 
@@ -1213,7 +1367,7 @@ function stopChatPolling() { stopSyncPolling(); }
 
 
 // ── New Direct Chat ──
-document.getElementById('btnNovoChatDireto').addEventListener('click', async () => {
+async function abrirNovoChatDireto() {
     try {
         const usuarios = await api('/api/usuarios');
         const others = usuarios.filter(u => u.id !== currentUser.id);
@@ -1230,7 +1384,8 @@ document.getElementById('btnNovoChatDireto').addEventListener('click', async () 
             </div>`).join('');
         openModal('Nova Conversa', `<p style="margin-bottom:1rem;color:var(--text-secondary)">Selecione um usuário:</p><div style="display:flex;flex-direction:column;gap:0.5rem">${userList}</div>`, '');
     } catch(err) { showToast('Erro ao carregar usuários','error'); }
-});
+}
+document.getElementById('btnNovoChatDireto').addEventListener('click', abrirNovoChatDireto);
 
 async function criarChatDireto(userId) {
     try {
@@ -1240,24 +1395,33 @@ async function criarChatDireto(userId) {
 }
 
 // ── New Group ──
-document.getElementById('btnNovoGrupo').addEventListener('click', async () => {
+async function abrirCriarGrupo() {
     try {
         const usuarios = await api('/api/usuarios');
         const others = usuarios.filter(u => u.id !== currentUser.id);
         const checkboxes = others.map(u => `
-            <label class="user-checkbox" style="display:flex;align-items:center;gap:0.75rem;padding:0.5rem;cursor:pointer;border-radius:var(--radius-sm)">
-                <input type="checkbox" value="${u.id}" class="grupo-membro-check">
-                <div class="chat-item-avatar" style="width:32px;height:32px">
-                    ${u.foto ? `<img src="${u.foto}" alt="">` : `<span>${u.nome.charAt(0)}</span>`}
+            <label class="member-selection-item">
+                <input type="checkbox" value="${u.id}" class="grupo-membro-check hidden-checkbox">
+                <div class="member-selection-content">
+                    <div class="chat-item-avatar" style="width:36px;height:36px">
+                        ${u.foto ? `<img src="${u.foto}" alt="">` : `<span>${u.nome.charAt(0)}</span>`}
+                    </div>
+                    <div class="member-info">
+                        <span class="member-name">${u.nome}</span>
+                        <span class="member-username">@${u.username}</span>
+                    </div>
+                    <div class="selection-indicator">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-check"><path d="M20 6 9 17l-5-5"/></svg>
+                    </div>
                 </div>
-                <span>${u.nome}</span>
             </label>`).join('');
         openModal('Novo Grupo', `
             <div class="form-group"><label class="form-label">Nome do Grupo</label><input type="text" class="input" id="grupoNome" placeholder="Ex: Grupo de Estudos"></div>
             <div class="form-group"><label class="form-label">Membros</label><div style="max-height:200px;overflow-y:auto">${checkboxes||'<p class="empty-state">Nenhum outro usuário</p>'}</div></div>
         `, `<button class="btn btn-ghost" onclick="closeModal()">Cancelar</button><button class="btn btn-primary" onclick="criarGrupo()">Criar Grupo</button>`);
     } catch(err) { showToast('Erro ao carregar usuários','error'); }
-});
+}
+document.getElementById('btnNovoGrupo').addEventListener('click', abrirCriarGrupo);
 
 async function criarGrupo() {
     const nome = document.getElementById('grupoNome').value.trim();
@@ -1342,15 +1506,31 @@ document.getElementById('btnEditGrupo').addEventListener('click', async () => {
         </div>
 
         ${availableUsers.length > 0 ? `
-        <div class="form-group" style="padding: 1rem; background: rgba(255,255,255,0.02); border-radius: var(--radius-md); border: 1px solid rgba(255,255,255,0.05);">
+        <div class="form-group member-addition-modern">
             <label class="form-label">Adicionar Novo Membro</label>
-            <div style="display:flex; gap:0.5rem">
-                <select class="input" id="newMemberSelect" style="flex:1">
-                    <option value="">Selecione um usuário...</option>
-                    ${availableUsers.map(u => `<option value="${u.id}">${u.nome} (@${u.username})</option>`).join('')}
-                </select>
-                <button class="btn btn-primary" onclick="window._adicionarMembroGrupo()">Adicionar</button>
+            <div class="member-search-container">
+                <input type="text" class="input search-input" id="newMemberSearch" placeholder="Pesquisar por nome ou @usuário..." oninput="window._filtrarMembrosAdicao(this.value)">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-search search-icon"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
             </div>
+            <div class="add-members-list" id="addMembersList">
+                ${availableUsers.map(u => `
+                <label class="member-selection-item add-item" data-search="${u.nome.toLowerCase()} @${u.username.toLowerCase()}">
+                    <input type="checkbox" value="${u.id}" class="add-membro-check hidden-checkbox">
+                    <div class="member-selection-content small">
+                        <div class="chat-item-avatar" style="width:32px;height:32px">
+                            ${u.foto ? `<img src="${u.foto}" alt="">` : `<span>${u.nome.charAt(0)}</span>`}
+                        </div>
+                        <div class="member-info">
+                            <span class="member-name">${u.nome}</span>
+                            <span class="member-username">@${u.username}</span>
+                        </div>
+                        <div class="selection-indicator">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-check"><path d="M20 6 9 17l-5-5"/></svg>
+                        </div>
+                    </div>
+                </label>`).join('')}
+            </div>
+            <button class="btn btn-primary w-full mt-2" onclick="window._adicionarMembroGrupo()">Adicionar Selecionados</button>
         </div>
         ` : ''}
 
@@ -1450,25 +1630,39 @@ document.getElementById('btnEditGrupo').addEventListener('click', async () => {
 
 window._adicionarMembroGrupo = async function() {
     if (!conversaAtual) return;
-    const select = document.getElementById('newMemberSelect');
-    const userId = select.value;
-    if (!userId) {
-        showToast('Selecione um usuário', 'error');
+    const checked = Array.from(document.querySelectorAll('.add-membro-check:checked'));
+    if (checked.length === 0) {
+        showToast('Selecione pelo menos um usuário', 'error');
         return;
     }
+    
     try {
-        await api(`/api/conversas/${conversaAtual.id}/membros`, {
-            method: 'POST',
-            body: { usuario_id: userId }
-        });
-        showToast('Membro adicionado!', 'success');
+        for (const cb of checked) {
+            await api(`/api/conversas/${conversaAtual.id}/membros`, {
+                method: 'POST',
+                body: { usuario_id: parseInt(cb.value) }
+            });
+        }
+        showToast(`${checked.length} membro(s) adicionado(s)!`, 'success');
         closeModal();
         await loadConversas();
-        // Re-open chat to refresh sidebar UI
         abrirConversa(conversaAtual.id);
     } catch(err) {
-        showToast('Erro ao adicionar membro', 'error');
+        showToast('Erro ao adicionar membro(s)', 'error');
     }
+};
+
+window._filtrarMembrosAdicao = function(query) {
+    const q = query.toLowerCase();
+    const items = document.querySelectorAll('.member-selection-item.add-item');
+    items.forEach(item => {
+        const text = item.getAttribute('data-search');
+        if (text.includes(q)) {
+            item.style.display = 'block';
+        } else {
+            item.style.display = 'none';
+        }
+    });
 };
 
 function renderGrupoWallGifs(gifs) {
@@ -2006,12 +2200,12 @@ window.abrirConfigWallpaper = async function() {
     const gridHtml = `
         <div class="wallpaper-grid">
             <div class="wallpaper-item none-item ${!current ? 'active' : ''}" onclick="setPlaceholderWallpaper(''); closeModal();">
-                <span>🚫</span>
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-ban"><circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/></svg>
                 <span>Nenhum</span>
             </div>
             
             <div class="wallpaper-item upload-item" onclick="document.getElementById('customWallInput').click()">
-                <span>📤</span>
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-upload-cloud"><path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"/><path d="M12 12V22"/><path d="m16 16-4-4-4 4"/></svg>
                 <span>Subir seu Próprio</span>
                 <input type="file" id="customWallInput" accept="image/*" style="display:none" onchange="window.handleCustomWallpaperUpload(this)">
             </div>
@@ -2067,8 +2261,113 @@ document.addEventListener('DOMContentLoaded', () => {
     setTimeout(() => {
         const btn = document.getElementById('btnConfigWallpaper');
         if (btn) btn.addEventListener('click', abrirConfigWallpaper);
+        
+        const chatMessages = document.getElementById('chatMessages');
+        if (chatMessages) {
+            chatMessages.addEventListener('scroll', () => {
+                if (chatMessages.scrollTop === 0) {
+                    loadOlderMessages();
+                }
+            });
+        }
+        
         initPlaceholderWallpaper();
     }, 100);
 });
 
 
+// ══════════════════════════════════════════════
+//  Internal Image Lightbox Logic
+// ══════════════════════════════════════════════
+let lightboxZoom = 1;
+let lightboxPan = { x: 0, y: 0 };
+let isDraggingLightbox = false;
+let startDragPos = { x: 0, y: 0 };
+
+window.abrirLightbox = function(url) {
+    const overlay = document.getElementById('imageLightbox');
+    const img = document.getElementById('lightboxImg');
+    
+    img.src = url;
+    lightboxZoom = 1;
+    lightboxPan = { x: 0, y: 0 };
+    updateLightboxTransform();
+    
+    overlay.classList.remove('hidden');
+    document.body.style.overflow = 'hidden'; // Stop scroll
+};
+
+window.fecharLightbox = function() {
+    const overlay = document.getElementById('imageLightbox');
+    overlay.classList.add('hidden');
+    document.body.style.overflow = '';
+};
+
+function updateLightboxTransform() {
+    const img = document.getElementById('lightboxImg');
+    img.style.transform = `translate(${lightboxPan.x}px, ${lightboxPan.y}px) scale(${lightboxZoom})`;
+}
+
+// Event Listeners for Lightbox
+document.addEventListener('DOMContentLoaded', () => {
+    const overlay = document.getElementById('imageLightbox');
+    const closeBtn = document.getElementById('btnCloseLightbox');
+    const img = document.getElementById('lightboxImg');
+    const content = document.getElementById('lightboxContent');
+    
+    if (!overlay) return;
+
+    closeBtn.addEventListener('click', fecharLightbox);
+    overlay.addEventListener('click', (e) => {
+        if (e.target === overlay || e.target === content) fecharLightbox();
+    });
+
+    // Zoom Controls
+    document.getElementById('btnZoomIn').onclick = () => { lightboxZoom += 0.2; updateLightboxTransform(); };
+    document.getElementById('btnZoomOut').onclick = () => { if(lightboxZoom > 0.4) lightboxZoom -= 0.2; updateLightboxTransform(); };
+    document.getElementById('btnResetZoom').onclick = () => { lightboxZoom = 1; lightboxPan = {x:0, y:0}; updateLightboxTransform(); };
+
+    // Mouse Wheel Zoom
+    overlay.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        const delta = e.deltaY > 0 ? -0.1 : 0.1;
+        const newZoom = lightboxZoom + delta;
+        if (newZoom >= 0.2 && newZoom <= 5) {
+            lightboxZoom = newZoom;
+            updateLightboxTransform();
+        }
+    }, { passive: false });
+
+    // Drag to Pan
+    content.onmousedown = (e) => {
+        isDraggingLightbox = true;
+        startDragPos = { x: e.clientX - lightboxPan.x, y: e.clientY - lightboxPan.y };
+        e.preventDefault();
+    };
+
+    window.addEventListener('mousemove', (e) => {
+        if (!isDraggingLightbox || overlay.classList.contains('hidden')) return;
+        lightboxPan.x = e.clientX - startDragPos.x;
+        lightboxPan.y = e.clientY - startDragPos.y;
+        updateLightboxTransform();
+    });
+
+    window.addEventListener('mouseup', () => {
+        isDraggingLightbox = false;
+    });
+
+    // ESC to close
+    window.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && !overlay.classList.contains('hidden')) {
+            fecharLightbox();
+        }
+    });
+});
+
+function closeAllPanels() {
+    const panels = ['gifPanel', 'emojiPanel', 'stickerPanel'];
+    panels.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.classList.add('hidden');
+    });
+}

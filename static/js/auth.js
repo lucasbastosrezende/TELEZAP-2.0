@@ -107,31 +107,45 @@ document.getElementById('btnEditProfile').addEventListener('click', (e) => {
                 </div>
             </div>
             
-            <div style="display:flex; flex-direction:column; gap:0.75rem; align-items:center; margin-top:1rem">
-                <div style="display: flex; gap: 0.5rem; justify-content: center;">
-                    <span style="font-size:0.8rem; color:var(--text-muted); align-self:center">Avatar:</span>
-                    <label class="btn btn-sm btn-secondary" style="cursor:pointer" title="Subir arquivo do computador">
-                        📷 Arquivo
-                        <input type="file" id="fotoInput" accept="image/jpeg,image/png,image/webp,image/gif" style="display:none">
-                    </label>
-                    <button class="btn btn-sm btn-secondary" id="btnPerfilGif" title="Procurar GIF">🎬 Buscar GIF</button>
+            <div class="profile-settings-modern">
+                <!-- Avatar Section -->
+                <div class="setting-row-modern">
+                    <div class="setting-icon-box">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-camera"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>
+                    </div>
+                    <div class="setting-content-box">
+                        <h4>Foto de Perfil</h4>
+                        <div class="setting-actions-modern">
+                            <label class="btn btn-sm btn-secondary" style="cursor:pointer" title="Subir arquivo do computador">
+                                📁 Arquivo
+                                <input type="file" id="fotoInput" accept="image/jpeg,image/png,image/webp,image/gif" style="display:none">
+                            </label>
+                            <button class="btn btn-sm btn-secondary" id="btnPerfilGif" title="Procurar GIF">🎬 Buscar GIF</button>
+                        </div>
+                    </div>
                 </div>
-                
-                <div style="display: flex; gap: 0.5rem; justify-content: center;">
-                    <span style="font-size:0.8rem; color:var(--text-muted); align-self:center">Fundo:</span>
-                    <label class="btn btn-sm btn-secondary" style="cursor:pointer" title="Subir fundo do computador">
-                        🌆 Arquivo
-                        <input type="file" id="wallpaperInput" accept="image/jpeg,image/png,image/webp,image/gif" style="display:none">
-                    </label>
-                    <button class="btn btn-sm btn-secondary" id="btnWallpaperGif" title="Procurar GIF de fundo">🎬 Buscar GIF</button>
+
+                <!-- Wallpaper Section -->
+                <div class="setting-row-modern">
+                    <div class="setting-icon-box">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-image"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>
+                    </div>
+                    <div class="setting-content-box">
+                        <h4>Fundo do Perfil</h4>
+                        <div class="setting-actions-modern">
+                            <label class="btn btn-sm btn-secondary" style="cursor:pointer" title="Subir fundo do computador">
+                                📁 Arquivo
+                                <input type="file" id="wallpaperInput" accept="image/jpeg,image/png,image/webp,image/gif" style="display:none">
+                            </label>
+                            <button class="btn btn-sm btn-secondary" id="btnWallpaperGif" title="Procurar GIF de fundo">🎬 Buscar GIF</button>
+                        </div>
+                    </div>
                 </div>
             </div>
             
-            <!-- Painel Tenor GIF (Perfil/Wallpaper) -->
-            <div id="profileGifPanel" class="hidden" style="margin-top: 1rem; text-align: left; background: var(--bg-surface); padding: 1rem; border-radius: var(--radius-md); border: 1px solid rgba(255,255,255,0.05);">
+            <div id="profileGifPanel" class="hidden" style="margin-top: 1rem; text-align: left; background: var(--bg-surface); padding: 10px; border-radius: var(--radius-md); border: 1px solid rgba(255,255,255,0.05);">
                 <input type="text" class="input" id="profileGifSearch" placeholder="Pesquisar Tenor GIF..." autocomplete="off" style="margin-bottom: 0.5rem">
-                <div id="profileGifResults" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.25rem; max-height: 250px; overflow-y: auto;">
-                    <!-- GIFs -->
+                <div id="profileGifResults" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.25rem; max-height: 200px; overflow-y: auto;">
                 </div>
             </div>
         </div>

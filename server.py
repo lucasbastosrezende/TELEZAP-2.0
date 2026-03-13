@@ -663,7 +663,9 @@ def sair_grupo(id):
 def listar_mensagens(id):
     db = get_db_g()
     after_id = request.args.get('after_id', '')
+    before_id = request.args.get('before_id', '')
     subtopico_id = request.args.get('subtopico_id', '')
+    limit = request.args.get('limit', 13, type=int)
 
     if after_id:
         if subtopico_id:
@@ -688,6 +690,30 @@ def listar_mensagens(id):
                 WHERE m.conversa_id = ? AND m.id > ? AND m.subtopico_id IS NULL
                 ORDER BY m.criado_em ASC
             ''', (id, int(after_id))).fetchall()
+    elif before_id:
+        if subtopico_id:
+            msgs = db.execute('''
+                SELECT m.*, u.nome as autor_nome, u.foto as autor_foto, u.username as autor_username,
+                       r.conteudo as reply_content, ru.nome as reply_author
+                FROM mensagens m 
+                JOIN usuarios u ON m.usuario_id = u.id
+                LEFT JOIN mensagens r ON m.reply_to_id = r.id
+                LEFT JOIN usuarios ru ON r.usuario_id = ru.id
+                WHERE m.conversa_id = ? AND m.id < ? AND m.subtopico_id = ? AND m.excluido_em IS NULL
+                ORDER BY m.criado_em DESC LIMIT ?
+            ''', (id, int(before_id), int(subtopico_id), limit)).fetchall()
+        else:
+            msgs = db.execute('''
+                SELECT m.*, u.nome as autor_nome, u.foto as autor_foto, u.username as autor_username,
+                       r.conteudo as reply_content, ru.nome as reply_author
+                FROM mensagens m 
+                JOIN usuarios u ON m.usuario_id = u.id
+                LEFT JOIN mensagens r ON m.reply_to_id = r.id
+                LEFT JOIN usuarios ru ON r.usuario_id = ru.id
+                WHERE m.conversa_id = ? AND m.id < ? AND m.subtopico_id IS NULL AND m.excluido_em IS NULL
+                ORDER BY m.criado_em DESC LIMIT ?
+            ''', (id, int(before_id), limit)).fetchall()
+        msgs = list(reversed(msgs))
     else:
         if subtopico_id:
             msgs = db.execute('''
@@ -698,8 +724,8 @@ def listar_mensagens(id):
                 LEFT JOIN mensagens r ON m.reply_to_id = r.id
                 LEFT JOIN usuarios ru ON r.usuario_id = ru.id
                 WHERE m.conversa_id = ? AND m.subtopico_id = ? AND m.excluido_em IS NULL
-                ORDER BY m.criado_em DESC LIMIT 50
-            ''', (id, int(subtopico_id))).fetchall()
+                ORDER BY m.criado_em DESC LIMIT ?
+            ''', (id, int(subtopico_id), limit)).fetchall()
         else:
             msgs = db.execute('''
                 SELECT m.*, u.nome as autor_nome, u.foto as autor_foto, u.username as autor_username,
@@ -709,8 +735,8 @@ def listar_mensagens(id):
                 LEFT JOIN mensagens r ON m.reply_to_id = r.id
                 LEFT JOIN usuarios ru ON r.usuario_id = ru.id
                 WHERE m.conversa_id = ? AND m.subtopico_id IS NULL AND m.excluido_em IS NULL
-                ORDER BY m.criado_em DESC LIMIT 50
-            ''', (id,)).fetchall()
+                ORDER BY m.criado_em DESC LIMIT ?
+            ''', (id, limit)).fetchall()
         msgs = list(reversed(msgs))
     return jsonify([dict(m) for m in msgs])
 
@@ -1046,6 +1072,62 @@ def fixar_mensagem(id):
     db.commit()
     return jsonify({'ok': True})
 
+
+STICKERS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static', 'stickers')
+os.makedirs(STICKERS_DIR, exist_ok=True)
+
+@app.route('/api/stickers', methods=['GET'])
+@login_required
+def listar_stickers():
+    uid = get_user_id()
+    db = get_db_g()
+    stickers = db.execute('SELECT * FROM stickers WHERE usuario_id = ? ORDER BY criado_em DESC', (uid,)).fetchall()
+    return jsonify([dict(s) for s in stickers])
+
+@app.route('/api/stickers/import', methods=['POST'])
+@login_required
+def importar_sticker():
+    if 'sticker' not in request.files:
+        return jsonify({'erro': 'Nenhum arquivo enviado'}), 400
+    
+    file = request.files['sticker']
+    if not file or not file.filename:
+        return jsonify({'erro': 'Arquivo inválido'}), 400
+    
+    ext = file.filename.rsplit('.', 1)[1].lower() if '.' in file.filename else ''
+    allowed_stickers = {'png', 'webp', 'jpg', 'jpeg'}
+    if ext not in allowed_stickers:
+        return jsonify({'erro': f'Formato .{ext} não suportado para figurinha.'}), 400
+    
+    filename = f"sticker_{uuid.uuid4().hex}.webp"
+    filepath = os.path.join(STICKERS_DIR, filename)
+    
+    # Process image to WebP with transparency
+    try:
+        img = PILImage.open(file)
+        # Resize to max 512x512 for stickers (WhatsApp standard)
+        if img.width > 512 or img.height > 512:
+            img.thumbnail((512, 512), PILImage.LANCZOS)
+        
+        img.save(filepath, 'WEBP', quality=80, method=4)
+        img.close()
+    except Exception as e:
+        app.logger.error(f"Sticker processing failed: {e}")
+        return jsonify({'erro': 'Falha ao processar figurinha'}), 500
+    
+    uid = get_user_id()
+    db = get_db_g()
+    sticker_url = f"/static/stickers/{filename}"
+    cursor = db.execute(
+        'INSERT INTO stickers (usuario_id, url) VALUES (?, ?)',
+        (uid, sticker_url)
+    )
+    db.commit()
+    
+    return jsonify({
+        'id': cursor.lastrowid,
+        'url': sticker_url
+    }), 201
 
 @app.route('/api/conversas/<int:id>/media', methods=['POST'])
 @login_required

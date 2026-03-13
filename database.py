@@ -158,6 +158,17 @@ def init_db():
             )
         ''')
 
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS stickers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            usuario_id INTEGER,
+            url TEXT NOT NULL,
+            categoria TEXT DEFAULT 'importado',
+            criado_em TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE CASCADE
+        )
+    ''')
+
     conn.commit()
     conn.close()
     print("Banco de dados inicializado com sucesso!")
