@@ -140,11 +140,17 @@ def webrtc_config():
     fall back to public PeerJS cloud, otherwise they end up on different brokers.
     """
     # PeerJS broker (signaling) settings
-    peer_host = os.getenv('PEERJS_HOST', '').strip() or request.host.split(':')[0]
+    # Default to localhost if not set, or extract from request host
+    env_host = os.getenv('PEERJS_HOST', '').strip()
+    # Se estivermos atrás do gateway ou túnel sem host fixo, usamos o host do request
+    peer_host = env_host or request.host.split(':')[0]
+    
     peer_path = os.getenv('PEERJS_PATH', '/myapp').strip() or '/myapp'
 
     try:
-        peer_port = int(os.getenv('PEERJS_PORT', '9000'))
+        # Default to 443 if a custom host is provided (likely Cloudflare/HTTPS)
+        default_port = 443 if env_host else 9000
+        peer_port = int(os.getenv('PEERJS_PORT', str(default_port)))
     except ValueError:
         peer_port = 9000
 
@@ -155,7 +161,8 @@ def webrtc_config():
     elif peer_secure_env in ('0', 'false', 'no', 'off'):
         peer_secure = False
     else:
-        peer_secure = request.is_secure
+        # Default to True if we are using port 443 or if the request is secure
+        peer_secure = (peer_port == 443) or request.is_secure
 
     # ICE servers (STUN + optional TURN)
     ice_servers = [
