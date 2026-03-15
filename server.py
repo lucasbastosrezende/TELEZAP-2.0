@@ -13,11 +13,12 @@ import traceback
 from typing import Any, Dict, List, Set, Tuple
 from PIL import Image as PILImage  # type: ignore
 
+
 app = Flask(__name__, static_folder='static', template_folder='templates')
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 app.secret_key = os.urandom(32)
 app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10MB (images are compressed client-side)
-CORS(app, supports_credentials=True)
+CORS(app, supports_credentials=True, origins=["https://tocachat.duckdns.org:8080", "http://localhost:8080", "http://127.0.0.1:8080"])
 socketio = SocketIO(app, cors_allowed_origins="*", supports_credentials=True, async_mode='threading')
 
 UPLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static', 'uploads')
@@ -203,7 +204,7 @@ def webrtc_config():
         peer_secure = request.is_secure
 
     # ICE servers (STUN + optional TURN)
-    ice_servers = [
+    ice_servers: List[Dict[str, Any]] = [
         {'urls': 'stun:stun.l.google.com:19302'},
         {'urls': 'stun:stun1.l.google.com:19302'},
     ]
@@ -348,6 +349,14 @@ def upload_foto():
     uid = get_user_id()
     db = get_db_g()
     tipo = request.form.get('tipo', 'avatar')  # 'avatar' or 'wallpaper'
+    conversa_id = request.form.get('conversa_id')
+    
+    # If it's a group wallpaper/photo, verify membership/permissions
+    if tipo == 'wallpaper' and conversa_id:
+        is_member = db.execute('SELECT 1 FROM conversa_membros WHERE conversa_id = ? AND usuario_id = ?', (conversa_id, uid)).fetchone()
+        if not is_member:
+            return jsonify({'erro': 'Não autorizado'}), 403
+    
     col = 'wallpaper' if tipo == 'wallpaper' else 'foto'
 
     # Server-side compression (avatar: 256px, wallpaper: 1280px)
@@ -379,11 +388,47 @@ def upload_foto():
 @app.route('/api/stickers', methods=['GET'])
 @login_required
 def listar_stickers():
-    sticker_dir = os.path.join(app.static_folder, 'stickers', 'default')
-    if not os.path.exists(sticker_dir):
-        return jsonify([])
-    files = [f for f in os.listdir(sticker_dir) if allowed_file(f)]
-    return jsonify([f"/static/stickers/default/{f}" for f in files])
+    # Buscamos tanto no diretório default quanto na raiz de stickers para customizados
+    sticker_root = os.path.join(app.static_folder, 'stickers')
+    default_dir = os.path.join(sticker_root, 'default')
+    
+    files = []
+    # Figurinhas do sistema
+    if os.path.exists(default_dir):
+        files.extend([f"/static/stickers/default/{f}" for f in os.listdir(default_dir) if allowed_file(f)])
+    
+    # Figurinhas customizadas (na raiz de stickers)
+    if os.path.exists(sticker_root):
+        files.extend([f"/static/stickers/{f}" for f in os.listdir(sticker_root) if allowed_file(f) and os.path.isfile(os.path.join(sticker_root, f))])
+        
+    return jsonify(files)
+
+
+@app.route('/api/upload-sticker', methods=['POST'])
+@login_required
+def upload_sticker():
+    if 'sticker' not in request.files:
+        return jsonify({'erro': 'Nenhum arquivo enviado'}), 400
+
+    file = request.files['sticker']
+    if not file or not allowed_file(file.filename):
+        return jsonify({'erro': 'Formato não suportado. Use JPG, PNG, WEBP ou GIF'}), 400
+
+    # Salvamos stickers na pasta de stickers para organização
+    sticker_dir = os.path.join(app.static_folder, 'stickers')
+    os.makedirs(sticker_dir, exist_ok=True)
+    
+    ext = file.filename.rsplit('.', 1)[1].lower()
+    filename = f"custom_{uuid.uuid4().hex}.{ext}"
+    filepath = os.path.join(sticker_dir, filename)
+    file.save(filepath)
+
+    # Stickers não precisam de compressão pesada, mas vamos garantir tamanho razoável
+    filepath = compress_image(filepath, max_size=512, quality=85)
+    filename = os.path.basename(filepath)
+
+    sticker_url = f"/static/stickers/{filename}"
+    return jsonify({'url': sticker_url})
 
 
 @app.route('/api/usuarios', methods=['GET'])
@@ -468,7 +513,7 @@ def obter_conversa(id):
     ).fetchone()
     if not conv:
         return jsonify({'erro': 'Conversa não encontrada'}), 404
-    conv = dict(conv)
+    conv: Dict[str, Any] = dict(conv)
     membros_raw = db.execute('''
         SELECT u.id, u.username, COALESCE(NULLIF(u.nome, ''), u.username) AS nome, u.foto, u.wallpaper, u.bio
         FROM conversa_membros cm JOIN usuarios u ON cm.usuario_id = u.id
@@ -577,6 +622,13 @@ def upload_foto_grupo(id):
     filename = os.path.basename(filepath)
 
     db = get_db_g()
+    uid = get_user_id()
+    
+    # Security: Verify membership
+    is_member = db.execute('SELECT 1 FROM conversa_membros WHERE conversa_id = ? AND usuario_id = ?', (id, uid)).fetchone()
+    if not is_member:
+        return jsonify({'erro': 'Não autorizado'}), 403
+
     old = db.execute('SELECT foto FROM conversas WHERE id = ?', (id,)).fetchone()
     if old and old['foto']:
         old_path = os.path.join(UPLOAD_DIR, os.path.basename(old['foto']))
@@ -610,6 +662,13 @@ def upload_wallpaper_grupo(id):
     filename = os.path.basename(filepath)
 
     db = get_db_g()
+    uid = get_user_id()
+    
+    # Security: Verify membership
+    is_member = db.execute('SELECT 1 FROM conversa_membros WHERE conversa_id = ? AND usuario_id = ?', (id, uid)).fetchone()
+    if not is_member:
+        return jsonify({'erro': 'Não autorizado'}), 403
+
     old = db.execute('SELECT wallpaper FROM conversas WHERE id = ?', (id,)).fetchone()
     if old and old['wallpaper']:
         old_path = os.path.join(UPLOAD_DIR, os.path.basename(old['wallpaper']))
@@ -628,6 +687,13 @@ def upload_wallpaper_grupo(id):
 def adicionar_membro(id):
     data = request.json
     db = get_db_g()
+    uid = get_user_id()
+    
+    # Security: Verify the person adding IS a member
+    is_member = db.execute('SELECT 1 FROM conversa_membros WHERE conversa_id = ? AND usuario_id = ?', (id, uid)).fetchone()
+    if not is_member:
+        return jsonify({'erro': 'Não autorizado'}), 403
+
     try:
         db.execute('INSERT INTO conversa_membros (conversa_id, usuario_id) VALUES (?, ?)',
                    (id, data['usuario_id']))
@@ -641,6 +707,16 @@ def adicionar_membro(id):
 @login_required
 def deletar_conversa(id):
     db = get_db_g()
+    uid = get_user_id()
+    
+    # Security: Only creator or admins (if roles exists, else creator) can delete
+    conv_info = db.execute('SELECT criado_por FROM conversas WHERE id = ?', (id,)).fetchone()
+    if not conv_info:
+        return jsonify({'erro': 'Conversa não encontrada'}), 404
+        
+    if conv_info['criado_por'] != uid:
+        return jsonify({'erro': 'Apenas o criador pode excluir a conversa'}), 403
+
     # Pega todas as mensagens da conversa que têm arquivos upados para apagar do disco
     msgs = db.execute('SELECT media_url FROM mensagens WHERE conversa_id = ? AND media_url != ""', (id,)).fetchall()
     for msg in msgs:
@@ -681,55 +757,45 @@ def sair_grupo(id):
 @login_required
 def listar_mensagens(id):
     db = get_db_g()
-    after_id = request.args.get('after_id', '')
-    subtopico_id = request.args.get('subtopico_id', '')
+    uid = get_user_id()
+    
+    # Security: Verify membership
+    is_member = db.execute('SELECT 1 FROM conversa_membros WHERE conversa_id = ? AND usuario_id = ?', (id, uid)).fetchone()
+    if not is_member:
+        return jsonify({'erro': 'Não autorizado'}), 403
+
+    after_id = request.args.get('after_id', type=int)
+    subtopico_id = request.args.get('subtopico_id', type=int)
+
+    query = '''
+        SELECT m.*, COALESCE(NULLIF(u.nome, ''), u.username) as autor_nome, u.foto as autor_foto, u.username as autor_username,
+               r.conteudo as reply_content, COALESCE(NULLIF(ru.nome, ''), ru.username) as reply_author
+        FROM mensagens m 
+        JOIN usuarios u ON m.usuario_id = u.id
+        LEFT JOIN mensagens r ON m.reply_to_id = r.id
+        LEFT JOIN usuarios ru ON r.usuario_id = ru.id
+        WHERE m.conversa_id = ?
+    '''
+    params = [id]
 
     if after_id:
-        if subtopico_id:
-            msgs = db.execute('''
-                SELECT m.*, COALESCE(NULLIF(u.nome, ''), u.username) as autor_nome, u.foto as autor_foto, u.username as autor_username,
-                       r.conteudo as reply_content, COALESCE(NULLIF(ru.nome, ''), ru.username) as reply_author
-                FROM mensagens m 
-                JOIN usuarios u ON m.usuario_id = u.id
-                LEFT JOIN mensagens r ON m.reply_to_id = r.id
-                LEFT JOIN usuarios ru ON r.usuario_id = ru.id
-                WHERE m.conversa_id = ? AND m.id > ? AND m.subtopico_id = ?
-                ORDER BY m.criado_em ASC
-            ''', (id, int(after_id), int(subtopico_id))).fetchall()
-        else:
-            msgs = db.execute('''
-                SELECT m.*, COALESCE(NULLIF(u.nome, ''), u.username) as autor_nome, u.foto as autor_foto, u.username as autor_username,
-                       r.conteudo as reply_content, COALESCE(NULLIF(ru.nome, ''), ru.username) as reply_author
-                FROM mensagens m 
-                JOIN usuarios u ON m.usuario_id = u.id
-                LEFT JOIN mensagens r ON m.reply_to_id = r.id
-                LEFT JOIN usuarios ru ON r.usuario_id = ru.id
-                WHERE m.conversa_id = ? AND m.id > ? AND m.subtopico_id IS NULL
-                ORDER BY m.criado_em ASC
-            ''', (id, int(after_id))).fetchall()
+        query += ' AND m.id > ?'
+        params.append(after_id)
     else:
-        if subtopico_id:
-            msgs = db.execute('''
-                SELECT m.*, COALESCE(NULLIF(u.nome, ''), u.username) as autor_nome, u.foto as autor_foto, u.username as autor_username,
-                       r.conteudo as reply_content, COALESCE(NULLIF(ru.nome, ''), ru.username) as reply_author
-                FROM mensagens m 
-                JOIN usuarios u ON m.usuario_id = u.id
-                LEFT JOIN mensagens r ON m.reply_to_id = r.id
-                LEFT JOIN usuarios ru ON r.usuario_id = ru.id
-                WHERE m.conversa_id = ? AND m.subtopico_id = ? AND m.excluido_em IS NULL
-                ORDER BY m.criado_em DESC LIMIT 50
-            ''', (id, int(subtopico_id))).fetchall()
-        else:
-            msgs = db.execute('''
-                SELECT m.*, COALESCE(NULLIF(u.nome, ''), u.username) as autor_nome, u.foto as autor_foto, u.username as autor_username,
-                       r.conteudo as reply_content, COALESCE(NULLIF(ru.nome, ''), ru.username) as reply_author
-                FROM mensagens m 
-                JOIN usuarios u ON m.usuario_id = u.id
-                LEFT JOIN mensagens r ON m.reply_to_id = r.id
-                LEFT JOIN usuarios ru ON r.usuario_id = ru.id
-                WHERE m.conversa_id = ? AND m.subtopico_id IS NULL AND m.excluido_em IS NULL
-                ORDER BY m.criado_em DESC LIMIT 50
-            ''', (id,)).fetchall()
+        query += ' AND m.excluido_em IS NULL'
+
+    if subtopico_id:
+        query += ' AND m.subtopico_id = ?'
+        params.append(subtopico_id)
+    else:
+        query += ' AND m.subtopico_id IS NULL'
+
+    if after_id:
+        query += ' ORDER BY m.criado_em ASC'
+        msgs = db.execute(query, params).fetchall()
+    else:
+        query += ' ORDER BY m.criado_em DESC LIMIT 50'
+        msgs = db.execute(query, params).fetchall()
         msgs = list(reversed(msgs))
 
     result = attach_reactions(db, [dict(m) for m in msgs], get_user_id())
@@ -994,7 +1060,7 @@ def chat_sync():
     # Update current user's call status via memory dict
     active_call_id = request.args.get('active_call_id')
     has_video = request.args.get('has_video', '0') == '1'
-    now = datetime.utcnow()
+    now = agora_manaus()
     
     if active_call_id and active_call_id.isdigit():
         ACTIVE_CALLS[uid] = {
@@ -1193,6 +1259,7 @@ def fixar_mensagem(id):
             db.execute('UPDATE conversas SET pinned_message_id = NULL WHERE id = ?', (id,))
 
     db.commit()
+    socketio.emit('pinned_update', {'conversa_id': id, 'subtopico_id': subtopico_id}, room=f"conv_{id}")
     return jsonify({'ok': True})
 
 
@@ -1261,6 +1328,18 @@ def criar_subtopico(id):
 def editar_subtopico(id):
     data = request.json
     db = get_db_g()
+    uid = get_user_id()
+    
+    # Security: Verify membership of the parent conversation
+    sub_info = db.execute('SELECT conversa_id FROM grupo_subtopicos WHERE id = ?', (id,)).fetchone()
+    if not sub_info:
+        return jsonify({'erro': 'Subtópico não encontrado'}), 404
+        
+    is_member = db.execute('SELECT 1 FROM conversa_membros WHERE conversa_id = ? AND usuario_id = ?', 
+                           (sub_info['conversa_id'], uid)).fetchone()
+    if not is_member:
+        return jsonify({'erro': 'Não autorizado'}), 403
+
     db.execute(
         'UPDATE grupo_subtopicos SET nome=?, descricao=?, cor=? WHERE id=?',
         (data.get('nome', ''), data.get('descricao', ''), data.get('cor', '#6366f1'), id)
@@ -1274,6 +1353,18 @@ def editar_subtopico(id):
 @login_required
 def deletar_subtopico(id):
     db = get_db_g()
+    uid = get_user_id()
+    
+    # Security: Verify membership of the parent conversation
+    sub_info = db.execute('SELECT conversa_id FROM grupo_subtopicos WHERE id = ?', (id,)).fetchone()
+    if not sub_info:
+        return jsonify({'erro': 'Subtópico não encontrado'}), 404
+        
+    is_member = db.execute('SELECT 1 FROM conversa_membros WHERE conversa_id = ? AND usuario_id = ?', 
+                           (sub_info['conversa_id'], uid)).fetchone()
+    if not is_member:
+        return jsonify({'erro': 'Não autorizado'}), 403
+
     db.execute('DELETE FROM grupo_subtopicos WHERE id = ?', (id,))
     db.commit()
     return jsonify({'ok': True})
@@ -1292,8 +1383,8 @@ def reordenar_subtopicos(id):
     nova_ordem = request.json.get('ordem', [])
     for idx, sub_id in enumerate(nova_ordem):
         db.execute('UPDATE grupo_subtopicos SET ordem = ? WHERE id = ? AND conversa_id = ?', (idx, sub_id, id))
-    
     db.commit()
+    socketio.emit('subtopic_reordered', {'conversa_id': id}, room=f"conv_{id}")
     return jsonify({'ok': True})
 
 
@@ -1656,16 +1747,30 @@ def on_join(data):
     # Join user-specific room for signals
     join_room(f"user_{user_id}")
     
+    db = get_db()
     # Join conversation rooms
     conv_id = data.get('conversa_id')
     if conv_id:
-        join_room(f"conv_{conv_id}")
+        # Security: Verify user is a member of this conversation
+        is_member = db.execute('SELECT 1 FROM conversa_membros WHERE conversa_id = ? AND usuario_id = ?', 
+                               (conv_id, user_id)).fetchone()
+        if is_member:
+            join_room(f"conv_{conv_id}")
+    db.close()
 
 @socketio.on('join_conv')
 def on_join_conv(data):
+    user_id = session.get('usuario_id')
+    if not user_id: return
+    
     conv_id = data.get('conversa_id')
     if conv_id:
-        join_room(f"conv_{conv_id}")
+        db = get_db() # Needs a fresh connection if outside app context or use current_app
+        is_member = db.execute('SELECT 1 FROM conversa_membros WHERE conversa_id = ? AND usuario_id = ?', 
+                               (conv_id, user_id)).fetchone()
+        db.close()
+        if is_member:
+            join_room(f"conv_{conv_id}")
 
 @socketio.on('leave_conv')
 def on_leave_conv(data):

@@ -70,9 +70,11 @@ socket.on('new_message', (msg) => {
         cacheEntry.lastFetchedAt = Date.now();
         messageCache[msg.conversa_id] = cacheEntry;
         
+        
         const container = document.getElementById('chatMessages');
         const wasAtBottom = container.scrollHeight - container.scrollTop <= container.clientHeight + 100;
         if (wasAtBottom) container.scrollTop = container.scrollHeight;
+        if (window.lucide) lucide.createIcons();
         trimMessageDom(container);
     }
 });
@@ -88,14 +90,16 @@ socket.on('message_deleted', (data) => {
 
 socket.on('pinned_update', (data) => {
     if (conversaAtual && data.conversa_id === conversaAtual.id) {
-        loadConversas().then(() => {
-            const refreshed = conversas.find(c => c.id === conversaAtual.id);
-            if (refreshed) {
-                conversaAtual = refreshed;
-                window.conversaAtual = conversaAtual;
-                renderPinnedMessageBar();
-            }
+        // Trigger a light sync immediately to fetch the new pinned content
+        performSync().then(() => {
+            renderPinnedMessageBar();
         });
+    }
+});
+
+socket.on('subtopic_reordered', (data) => {
+    if (conversaAtual && data.conversa_id === conversaAtual.id) {
+        loadSubtopicos();
     }
 });
 
@@ -148,7 +152,7 @@ function renderConversasList() {
                 <div class="chat-item-avatar">
                     ${c.display_foto
                         ? `<img src="${c.display_foto}" alt="" loading="lazy" style="aspect-ratio:1/1;object-fit:cover">`
-                        : (isGroup ? `<span>👥</span>` : `<video autoplay loop muted playsinline class="default-avatar-vid"><source src="/static/images/logo3.mp4" type="video/mp4"></video>`)}
+                        : (isGroup ? `<div class="participant-avatar-fallback"><i data-lucide="users"></i></div>` : `<video autoplay loop muted playsinline class="default-avatar-vid"><source src="/static/images/logo3.mp4" type="video/mp4"></video>`)}
                 </div>
                 <div class="chat-item-info">
                     <div class="chat-item-name">${c.display_nome}</div>
@@ -157,10 +161,11 @@ function renderConversasList() {
                 <div style="display: flex; align-items: center; gap: 0.25rem;">
                     ${unread > 0 ? `<span class="chat-unread-badge">${unread > 99 ? '99+' : unread}</span>` : ''}
                     ${c.ultima_msg_em ? `<span class="chat-item-time">${formatTime(c.ultima_msg_em)}</span>` : ''}
-                    ${!isGroup ? `<button class="btn btn-sm btn-ghost" style="padding: 0.2rem; color: var(--danger)" onclick="event.stopPropagation(); excluirChat(${c.id}, '${c.display_nome.replace("'", "\\'")}')" title="Excluir conversa">🗑️</button>` : ''}
+                    ${!isGroup ? `<button class="btn btn-sm btn-ghost" style="padding: 0.2rem; color: var(--danger)" onclick="event.stopPropagation(); excluirChat(${c.id}, '${c.display_nome.replace("'", "\\'")}')" title="Excluir conversa"><i data-lucide="trash-2"></i></button>` : ''}
                 </div>
             </div>`;
     }).join('');
+    if (window.lucide) lucide.createIcons();
 }
 
 // Prefetch de mensagens ao passar o mouse / tocar em uma conversa
@@ -233,7 +238,7 @@ async function abrirConversa(id) {
     const avatarEl = document.getElementById('chatAvatar');
     avatarEl.innerHTML = conv.display_foto
         ? `<img src="${conv.display_foto}" alt="">`
-        : (conv.tipo === 'grupo' ? `<span>👥</span>` : `<video autoplay loop muted playsinline class="default-avatar-vid"><source src="/static/images/logo3.mp4" type="video/mp4"></video>`);
+        : (conv.tipo === 'grupo' ? `<div class="participant-avatar-fallback"><i data-lucide="users"></i></div>` : `<video autoplay loop muted playsinline class="default-avatar-vid"><source src="/static/images/logo3.mp4" type="video/mp4"></video>`);
     
     if (isDirect && otherUser) {
         avatarEl.style.cursor = 'pointer';
@@ -280,6 +285,7 @@ async function abrirConversa(id) {
     renderPinnedMessageBar();
     
     await Promise.all(promises);
+    if (window.lucide) lucide.createIcons();
     document.getElementById('chatInput').focus();
 }
 
@@ -308,11 +314,12 @@ function updateActiveCallersUI(callers) {
     if (currentActiveCallers.length > 0 && !currentActiveCallers.includes(currentUser.id) && !isInCallLocal) {
         btnAudio.classList.add('pulse-call-btn');
         const countText = currentActiveCallers.length > 1 ? ` (${currentActiveCallers.length})` : '';
-        btnAudio.innerHTML = `📞 Entrar${countText}`;
+        btnAudio.innerHTML = `<i data-lucide="phone"></i> Entrar${countText}`;
     } else {
         btnAudio.classList.remove('pulse-call-btn');
-        btnAudio.innerHTML = '📞';
+        btnAudio.innerHTML = `<i data-lucide="phone"></i>`;
     }
+    if (window.lucide) lucide.createIcons();
 }
 
 function renderParticipantsSidebar(conv) {
@@ -381,7 +388,7 @@ async function loadSubtopicos() {
 function renderSubtopicsTabs() {
     const container = document.getElementById('subtopicsTabs');
     // "Geral" is always first and NOT draggable.
-    let html = `<button class="sub-tab ${subtopicAtual === null ? 'active' : ''}" onclick="selectSubtopic(null)" draggable="false">💬 Geral</button>`;
+    let html = `<button class="sub-tab ${subtopicAtual === null ? 'active' : ''}" onclick="selectSubtopic(null)" draggable="false"><i data-lucide="message-square" style="width:14px;height:14px"></i> Geral</button>`;
     
     subtopicos.forEach(s => {
         const isActive = subtopicAtual && subtopicAtual.id === s.id ? 'active' : '';
@@ -389,9 +396,10 @@ function renderSubtopicsTabs() {
         html += `<button class="sub-tab draggable-subtopic ${isActive}" data-id="${s.id}" onclick="selectSubtopic(${s.id})" draggable="true" style="border-left:3px solid ${s.cor}">${s.nome}</button>`;
     });
     
-    html += `<button class="sub-tab sub-tab-add" onclick="abrirCriarSubtopico()" draggable="false">＋</button>`;
+    html += `<button class="sub-tab sub-tab-add" onclick="abrirCriarSubtopico()" draggable="false"><i data-lucide="plus"></i></button>`;
     container.innerHTML = html;
     
+    if (window.lucide) lucide.createIcons();
     setupSubtopicDragAndDrop();
 }
 
@@ -647,7 +655,8 @@ function renderSingleMessage(msg, isOptimistic = false, returnOnly = false) {
             optimistic.dataset.msgId = msg.id;
             optimistic.querySelector('.msg-time').textContent = formatTime(msg.criado_em);
             const actions = optimistic.querySelector('.msg-actions');
-            actions.innerHTML = `<button class="btn btn-sm btn-ghost" onclick="apagarMensagem(${msg.id})" title="Apagar mensagem">🗑️</button>`;
+            actions.innerHTML = `<button class="btn btn-sm btn-ghost" onclick="apagarMensagem(${msg.id})" title="Apagar mensagem"><i data-lucide="trash-2"></i></button>`;
+            if (window.lucide) lucide.createIcons();
             return optimistic;
         }
     }
@@ -686,9 +695,9 @@ function renderSingleMessage(msg, isOptimistic = false, returnOnly = false) {
     bubble.innerHTML = `
         <div class="msg-actions">
             ${msg.id ? `
-                <button class="btn btn-sm btn-ghost" onclick="setReplyMode(${msg.id}, '${authorName}', '${contentPreview}')" title="Responder">↩️</button>
-                <button class="btn btn-sm btn-ghost" onclick="fixarMensagem(${msg.id})" title="Fixar">📌</button>
-                ${isMine ? `<button class="btn btn-sm btn-ghost" onclick="apagarMensagem(${msg.id})" title="Apagar mensagem">🗑️</button>` : ''}
+                <button class="btn btn-sm btn-ghost" onclick="setReplyMode(${msg.id}, '${authorName}', '${contentPreview}')" title="Responder"><i data-lucide="reply"></i></button>
+                <button class="btn btn-sm btn-ghost" onclick="fixarMensagem(${msg.id})" title="Fixar"><i data-lucide="pin"></i></button>
+                ${isMine ? `<button class="btn btn-sm btn-ghost" onclick="apagarMensagem(${msg.id})" title="Apagar mensagem"><i data-lucide="trash-2"></i></button>` : ''}
             ` : ''}
         </div>
         ${!isMine ? `<div class="msg-author">
@@ -760,6 +769,7 @@ async function loadMensagens() {
             messageCache[convId] = cacheEntry;
 
             container.appendChild(fragment);
+            if (window.lucide) lucide.createIcons();
             container.scrollTop = container.scrollHeight;
             trimMessageDom(container);
         }
@@ -1183,6 +1193,33 @@ async function loadStickers() {
     }
 }
 
+async function importarStickerDesdeArquivo(input) {
+    const file = input.files[0];
+    if (!file) return;
+    
+    // Mostramos feedback visual
+    showToast('Processando figurinha...', 'info');
+    
+    const formData = new FormData();
+    formData.append('sticker', file);
+    
+    try {
+        const data = await api('/api/upload-sticker', {
+            method: 'POST',
+            body: formData
+        });
+        
+        showToast('Figurinha adicionada! ✨', 'success');
+        loadStickers(); // Recarrega a lista
+    } catch (err) {
+        console.error('Erro ao importar figurinha:', err);
+        showToast('Erro de conexão ao subir figurinha', 'error');
+    } finally {
+        input.value = ''; // Reseta o input
+    }
+}
+window.importarStickerDesdeArquivo = importarStickerDesdeArquivo;
+
 function selectSticker(url) {
     document.getElementById('stickerPanel').classList.add('hidden');
     pendingMedia.push({ url, name: 'Sticker', isVideo: false, uploading: false });
@@ -1243,6 +1280,15 @@ async function performSync() {
             conversas = data.conversas;
             window.conversas = conversas;
             renderConversasList();
+
+            if (conversaAtual) {
+                const refreshed = conversas.find(c => c.id === conversaAtual.id);
+                if (refreshed) {
+                    conversaAtual = refreshed;
+                    window.conversaAtual = conversaAtual;
+                    renderPinnedMessageBar();
+                }
+            }
         }
 
         // 2. Active Callers
@@ -2016,4 +2062,4 @@ function sendBrowserNotification(title, body, convName, convId) {
     }
 }
 
-
+console.log('✅ Chat.js carregado com sucesso.');

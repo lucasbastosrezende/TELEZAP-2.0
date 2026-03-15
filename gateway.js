@@ -26,7 +26,18 @@ try {
 }
 
 const proxy = httpProxy.createProxyServer({
-    xfwd: true // Adiciona headers X-Forwarded-For e X-Forwarded-Proto
+    xfwd: true,
+    changeOrigin: true,
+    proxyTimeout: 30000, // 30s timeout
+    timeout: 30000
+});
+
+// Logging middleware
+app.use((req, res, next) => {
+    if (req.url.includes('/api/upload')) {
+        console.log(`[Gateway] Upload request: ${req.method} ${req.url} - ${req.headers['content-length']} bytes`);
+    }
+    next();
 });
 
 console.log('--- Gateway TocaChat (HTTPS + WebSocket Enabled) ---');
@@ -40,8 +51,22 @@ proxy.on('error', (err, req, res) => {
     }
 });
 
+// Upgrade logging for debugging WebSockets
+proxy.on('proxyReqWs', (proxyReq, req, socket, options, head) => {
+    console.log(`[Proxy] WS Upgrade Request: ${req.url} -> ${options.target}`);
+});
+
+proxy.on('open', (proxySocket) => {
+    console.log('[Proxy] WebSocket connection opened');
+});
+
+proxy.on('close', (res, socket, head) => {
+    console.log('[Proxy] WebSocket connection closed');
+});
+
 // Routing
 app.all('/myapp*', (req, res) => {
+    console.log(`[Proxy] Web Request: /myapp* -> PeerJS`);
     proxy.web(req, res, { target: PEERJS_SERVER });
 });
 
@@ -57,11 +82,13 @@ const server = https.createServer(httpsOptions, app);
 
 // Handle WebSocket upgrades
 server.on('upgrade', (req, socket, head) => {
+    console.log(`[Gateway] Upgrade request received: ${req.url}`);
     if (req.url.startsWith('/myapp')) {
         proxy.ws(req, socket, head, { target: PEERJS_SERVER });
     } else if (req.url.startsWith('/socket.io')) {
         proxy.ws(req, socket, head, { target: FLASK_SERVER });
     } else {
+        console.warn(`[Gateway] Unauthorized upgrade path: ${req.url}`);
         socket.destroy();
     }
 });

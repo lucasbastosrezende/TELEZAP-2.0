@@ -255,12 +255,28 @@ window.reapplyParticipantsInCall = reapplyCallBadges;
 // ============================================================================
 //  PeerJS — init & reconnect
 // ============================================================================
-function initPeer() {
+let webrtcConfigCache = null;
+
+async function getWebrtcConfig() {
+    if (webrtcConfigCache) return webrtcConfigCache;
+    try {
+        const res = await api('/api/webrtc/config');
+        if (res) {
+            webrtcConfigCache = res;
+            return webrtcConfigCache;
+        }
+    } catch (e) {
+        console.warn("[WebRTC] Failed to fetch config from server", e);
+    }
+    return null;
+}
+
+async function initPeer() {
     if (isPeerOpening) return;
     if (peer && !peer.destroyed && peer.open) return;
     if (peer && !peer.destroyed) { try { peer.destroy(); } catch (e) { /* ignore */ } }
     peer = null;
-    _createPeer();
+    await _createPeer();
 }
 
 function handlePeerReconnect() {
@@ -276,29 +292,50 @@ function handlePeerReconnect() {
     reconnectTimer = setTimeout(initPeer, delay);
 }
 
-function _createPeer() {
+async function _createPeer() {
     if (!navigator.onLine) { console.warn('[PeerJS] Offline'); return; }
     isPeerOpening = true;
 
-    const customConfig = {
-        iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' },
-        ]
-    };
-
+    const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
     const isHttps = window.location.protocol === 'https:';
+
+    // When behind the HTTPS gateway, PeerJS is proxied on the same port as the page.
+    // Only use the direct PeerJS port (9000) when running locally without the gateway.
+    const effectivePort = isLocal
+        ? 9000
+        : parseInt(window.location.port) || (isHttps ? 443 : 80);
+
     const peerOptions = {
         host: window.location.hostname,
-        port: peerCurrentPort,
+        port: effectivePort,
         path: '/myapp',
         key: 'peerjs',
         secure: isHttps,
-        config: customConfig,
+        config: {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' },
+            ]
+        },
         debug: 2,
         pingInterval: 20000,
         reliable: true
     };
+
+    // Fetch server-side config for ICE/TURN servers and path overrides
+    const serverConfig = await getWebrtcConfig();
+    if (serverConfig) {
+        // Only use the server-provided host/port when on localhost (direct connection)
+        if (isLocal) {
+            peerOptions.host = serverConfig.peer.host || peerOptions.host;
+            peerOptions.port = serverConfig.peer.port || peerOptions.port;
+        }
+        // Always apply path, secure flag, and ICE config from server
+        peerOptions.path = serverConfig.peer.path || peerOptions.path;
+        peerOptions.secure = serverConfig.peer.secure !== undefined ? serverConfig.peer.secure : peerOptions.secure;
+        if (serverConfig.rtc) peerOptions.config = serverConfig.rtc;
+    }
+    peerCurrentPort = peerOptions.port;
 
     console.log('[PeerJS] Inicializando', peerOptions);
 
@@ -311,7 +348,7 @@ function _createPeer() {
     }
 
     peer.on('open', id => {
-        console.log('[PeerJS] Conectado com sucesso', id);
+        console.log('[PeerJS] Conectado com sucesso ao servidor de sinalização. ID:', id);
         peerHadOpenOnce = true;
         reconnectAttempts = 0;
         isPeerOpening = false;
@@ -319,15 +356,21 @@ function _createPeer() {
     });
 
     peer.on('disconnected', () => {
-        console.warn('[PeerJS] disconnected');
+        console.warn('[PeerJS] Conexão com o servidor de sinalização perdida. Tentando reconectar...');
         isPeerOpening = false;
+        // Try PeerJS built-in reconnect first (faster than full re-init)
+        if (peer && !peer.destroyed) {
+            try {
+                peer.reconnect();
+                return;
+            } catch (e) { /* ignore, fall through to full reinit */ }
+        }
         handlePeerReconnect();
     });
 
     peer.on('close', () => {
-        console.warn('[PeerJS] close');
+        console.warn('[PeerJS] Conexão Peer encerrada permanentemente.');
         isPeerOpening = false;
-        handlePeerReconnect();
     });
 
     // ── Incoming PeerJS media call (WebRTC level) ─────────────────────────
@@ -349,21 +392,15 @@ function _createPeer() {
 
     peer.on('error', err => {
         isPeerOpening = false;
-        console.error('[PeerJS] erro:', err);
-        if (err.type === 'network' || err.type === 'server-error') {
-            const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-            if (!peerHadOpenOnce && isLocal && peerCurrentPort === 9000) {
-                // If local fails on 9000, maybe it's through the gateway?
-                console.warn('[PeerJS] Fallback para 8080 (gateway local)');
-                peerCurrentPort = 8080;
-                setTimeout(initPeer, 1000);
-            } else {
-                handlePeerReconnect();
-            }
+        console.error('[PeerJS] Erro detectado:', err.type, err);
+        
+        if (err.type === 'network' || err.type === 'server-error' || err.type === 'socket-error' || err.type === 'socket-closed') {
+            console.warn(`[PeerJS] Erro de conexão (${err.type}). Reconectando...`);
+            handlePeerReconnect();
         } else if (err.type === 'peer-unavailable') {
-            console.log('[PeerJS] peer destino offline (normal se ainda não entrou)');
+            console.log('[PeerJS] Peer de destino não encontrado ou offline.');
         } else {
-            console.error('[PeerJS] erro crítico', err);
+            console.error('[PeerJS] Erro crítico não tratado:', err);
         }
     });
 }
@@ -543,15 +580,19 @@ function renderRemoteParticipant(participantId, stream, metadata = null) {
         container.id = `participant-${participantId}`;
 
         let fallbackName = 'Usuário';
+        let fallbackPhoto = null;
         if (window.conversaAtual) {
             const member = window.conversaAtual.membros.find(m => String(m.id) === String(participantId));
-            if (member) fallbackName = member.nome;
+            if (member) {
+                fallbackName = member.nome;
+                fallbackPhoto = member.foto;
+            }
         }
 
         container.innerHTML = `
             <video autoplay playsinline id="video-${participantId}"></video>
             <div class="remote-avatar" id="avatar-${participantId}">
-                ${getAvatarHtml(participantId, fallbackName, null)}
+                ${getAvatarHtml(participantId, fallbackName, fallbackPhoto)}
             </div>
             <div class="remote-label">${fallbackName}</div>
         `;
@@ -677,6 +718,18 @@ function _cancelRingTimeout() {
     if (ringTimeout) { clearTimeout(ringTimeout); ringTimeout = null; }
 }
 
+// Wait until peer is open (or timeout)
+function waitForPeer(timeoutMs = 10000) {
+    return new Promise(resolve => {
+        if (peer && peer.open) { resolve(true); return; }
+        const start = Date.now();
+        const interval = setInterval(() => {
+            if (peer && peer.open) { clearInterval(interval); resolve(true); return; }
+            if (Date.now() - start > timeoutMs) { clearInterval(interval); resolve(false); }
+        }, 200);
+    });
+}
+
 // ============================================================================
 //  ▶  _enterCall() — shared by CALLER (after ring_accept) and CALLEE (after accept button)
 // ============================================================================
@@ -692,14 +745,24 @@ async function _enterCall() {
     showCallUI();
     updateCallStatusText('Conectando dispositivos...');
 
-    const hasMedia = await getLocalMedia();
+    // Ensure PeerJS is initialised and get media in parallel
+    const [hasMedia] = await Promise.all([
+        getLocalMedia(),
+        initPeer()
+    ]);
+
     if (!hasMedia || !localStream) {
         showToast('Não foi possível acessar câmera/microfone.', 'error');
         endCall(false);
         return;
     }
 
-    initPeer();
+    // Wait for PeerJS to be ready (up to 10 s)
+    updateCallStatusText('Conectando ao servidor de chamadas...');
+    const peerReady = await waitForPeer(10000);
+    if (!peerReady) {
+        console.warn('[PeerJS] Timeout aguardando conexão — tentando mesmo assim');
+    }
     updateCallStatusText('Na chamada');
     isJoined = true;
 
