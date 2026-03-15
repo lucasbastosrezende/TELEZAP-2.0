@@ -10,7 +10,7 @@ import uuid
 import os
 import json
 import traceback
-from typing import Any, Dict
+from typing import Any, Dict, List, Set, Tuple
 from PIL import Image as PILImage  # type: ignore
 
 app = Flask(__name__, static_folder='static', template_folder='templates')
@@ -125,12 +125,12 @@ def build_reactions_map(db, message_ids, current_user_id):
         WHERE mensagem_id IN ({placeholders})
     ''', tuple(message_ids)).fetchall()
 
-    reaction_users = {}
+    reaction_users: Dict[Tuple[int, str], Set[int]] = {}
     for row in rows:
         key = (row['mensagem_id'], row['emoji'])
         reaction_users.setdefault(key, set()).add(row['usuario_id'])
 
-    reactions_map = {}
+    reactions_map: Dict[int, List[Dict[str, Any]]] = {}
     for (mensagem_id, emoji), users in reaction_users.items():
         reactions_map.setdefault(mensagem_id, []).append({
             'emoji': emoji,
