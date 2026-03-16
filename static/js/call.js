@@ -27,6 +27,8 @@ window.usersInCall = usersInCall;
 
 let rtcConfigCache = null;
 let callRetryInterval = null;
+let isCallInitiator = false;
+const pendingIceCandidates = {};
 
 // ── Ringtone ─────────────────────────────────────────────────────────────────
 let ringtoneCtx = null;
@@ -277,6 +279,96 @@ async function ensurePeerConnection(remoteId) {
     const rtcConfig = await getWebrtcConfig();
     const pc = new RTCPeerConnection(rtcConfig);
     activeCalls[key] = pc;
+
+    if (localStream) {
+        localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+    }
+
+    pc.ontrack = (event) => {
+        const [remoteStream] = event.streams;
+        if (!remoteStream) return;
+        console.log('[WebRTC] Stream recebida de', key,
+            '— audio:', remoteStream.getAudioTracks().length,
+            'video:', remoteStream.getVideoTracks().length);
+        renderRemoteParticipant(key, remoteStream);
+    };
+
+    pc.onicecandidate = (event) => {
+        if (!event.candidate) return;
+        sendCallSignal(remoteId, 'webrtc_ice', { candidate: event.candidate }, callSourceId);
+    };
+
+    pc.onconnectionstatechange = () => {
+        if (pc.connectionState === 'failed') {
+            console.warn('[WebRTC] Conexão falhou com', key);
+            removeRemoteParticipant(key);
+        }
+        if (pc.connectionState === 'closed' || pc.connectionState === 'disconnected') {
+            removeRemoteParticipant(key);
+        }
+    };
+
+    return pc;
+}
+
+async function createAndSendOffer(remoteId) {
+    const pc = await ensurePeerConnection(remoteId);
+    if (pc.signalingState !== 'stable') return;
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    await sendCallSignal(remoteId, 'webrtc_offer', { sdp: offer }, callSourceId);
+}
+
+async function handleWebrtcOffer(remoteId, sdp) {
+    if (!isInCall) return;
+    const key = String(remoteId);
+    const pc = await ensurePeerConnection(remoteId);
+
+    if (pc.signalingState !== 'stable') {
+        try {
+            await pc.setLocalDescription({ type: 'rollback' });
+        } catch (e) {
+            console.warn('[WebRTC] Rollback falhou para', key, e);
+        }
+    }
+
+    await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+
+    if (pendingIceCandidates[key]?.length) {
+        for (const c of pendingIceCandidates[key]) {
+            try { await pc.addIceCandidate(new RTCIceCandidate(c)); } catch (e) { console.warn(e); }
+        }
+        pendingIceCandidates[key] = [];
+    }
+
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    await sendCallSignal(remoteId, 'webrtc_answer', { sdp: answer }, callSourceId);
+}
+
+async function handleWebrtcAnswer(remoteId, sdp) {
+    const key = String(remoteId);
+    const pc = activeCalls[key];
+    if (!pc) return;
+    await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+    if (pendingIceCandidates[key]?.length) {
+        for (const c of pendingIceCandidates[key]) {
+            try { await pc.addIceCandidate(new RTCIceCandidate(c)); } catch (e) { console.warn(e); }
+        }
+        pendingIceCandidates[key] = [];
+    }
+}
+
+async function handleWebrtcIce(remoteId, candidate) {
+    const key = String(remoteId);
+    const pc = activeCalls[key] || await ensurePeerConnection(remoteId);
+
+    if (!pc.remoteDescription) {
+        if (!pendingIceCandidates[key]) pendingIceCandidates[key] = [];
+        pendingIceCandidates[key].push(candidate);
+        return;
+    }
+
 
     if (localStream) {
         localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
@@ -576,6 +668,7 @@ async function startCall() {
 
     // Mark as ringing
     isRinging = true;
+    isCallInitiator = true;
     markParticipantInCall(currentUser.id, true);
 
     // Pré-aquecer mídia e ICE em background
@@ -676,6 +769,9 @@ async function _enterCall() {
             sendCallSignal(m.id, 'in_call', { userId: currentUser.id }, callSourceId);
         });
 
+        // Só o iniciador cria ofertas para evitar glare (offer collision)
+        const attemptCallToOthers = async () => {
+            if (!isCallInitiator) return;
         // Tenta conexões mesh com todos os participantes
         const attemptCallToOthers = async () => {
             for (const m of others) {
@@ -717,6 +813,7 @@ async function joinCall() {
 
         // Let caller know we accepted (they will call _enterCall on their side)
         await sendCallSignal(caller.id, 'ring_accept', {}, callSourceId);
+        isCallInitiator = false;
 
         // Also ensure we are in the right conversation context
         if (!window.conversaAtual || window.conversaAtual.id !== callConv.id) {
@@ -725,6 +822,7 @@ async function joinCall() {
     } else {
         // Direct join (e.g. joining an already-active call)
         callSourceId = window.conversaAtual?.id ?? null;
+        isCallInitiator = true;
         window.callSourceId = callSourceId;
         if (!callSourceId) {
             showToast('Erro: conversa não identificada.', 'error');
@@ -808,6 +906,11 @@ async function toggleCamera() {
 
             const localVid = document.getElementById('localVideo');
             if (localVid) localVid.srcObject = localStream;
+        } else {
+            Object.values(activeCalls).forEach(pc => {
+                const sender = pc.getSenders().find(s => s.track?.kind === 'video');
+                if (sender) sender.replaceTrack(null).catch(e => console.error(e));
+            });
         }
 
         updateControlsUI();
@@ -1040,6 +1143,11 @@ function dismissIncomingCall() {
 // ============================================================================
 //  Event bindings
 // ============================================================================
+window.startCall = startCall;
+window.joinCall = joinCall;
+window.endCall = endCall;
+window.toggleCamera = toggleCamera;
+
 window.addEventListener('DOMContentLoaded', () => {
 
     // 📞 Audio call button — now calls startCall()
