@@ -17,14 +17,15 @@ from PIL import Image as PILImage  # type: ignore
 app = Flask(__name__, static_folder='static', template_folder='templates')
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 app.secret_key = os.urandom(32)
-app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10MB (images are compressed client-side)
+UPLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static', 'uploads')
+app.config['UPLOAD_DIR'] = UPLOAD_DIR
+app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500MB for HD videos
 CORS(app, supports_credentials=True, origins=["https://tocachat.duckdns.org:8080", "http://localhost:8080", "http://127.0.0.1:8080"])
 socketio = SocketIO(app, cors_allowed_origins="*", supports_credentials=True, async_mode='threading')
 
-UPLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static', 'uploads')
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-ALLOWED_EXTENSIONS = {'jpg', 'jpeg', 'png', 'webp', 'gif'}
+ALLOWED_EXTENSIONS = {'jpg', 'jpeg', 'png', 'webp', 'gif', 'mp4', 'webm'}
 
 init_db()
 
@@ -61,39 +62,8 @@ def allowed_file(filename):
 
 
 def compress_image(filepath, max_size=1280, quality=80):
-    """Compress an image server-side using Pillow. Skips GIFs."""
-    try:
-        ext = filepath.rsplit('.', 1)[1].lower()
-        if ext == 'gif':  # Skip GIFs (animation)
-            return filepath
-        
-        img = PILImage.open(filepath)
-        
-        # Convert RGBA to RGB for WebP/JPEG compatibility
-        if img.mode in ('RGBA', 'LA', 'P'):
-            background = PILImage.new('RGB', img.size, (255, 255, 255))
-            if img.mode == 'P':
-                img = img.convert('RGBA')
-            background.paste(img, mask=img.split()[-1] if 'A' in img.mode else None)
-            img = background
-        
-        # Resize if larger than max_size
-        if img.width > max_size or img.height > max_size:
-            img.thumbnail((max_size, max_size), PILImage.LANCZOS)
-        
-        # Save as WebP for best compression
-        webp_path = filepath.rsplit('.', 1)[0] + '.webp'
-        img.save(webp_path, 'WEBP', quality=quality, method=4)
-        img.close()
-        
-        # Remove original if different from webp
-        if filepath != webp_path and os.path.exists(filepath):
-            os.remove(filepath)
-        
-        return webp_path
-    except Exception as e:
-        app.logger.warning(f"Image compression failed: {e}")
-        return filepath  # Return original on error
+    """Returns original filepath immediately to ensure maximum quality as requested."""
+    return filepath
 
 # Fuso horário do Amazonas (Manaus, UTC-4)
 MANAUS_TZ = timezone(timedelta(hours=-4), 'America/Manaus')
@@ -339,7 +309,7 @@ def upload_foto():
 
     file = request.files['foto']
     if not file or not allowed_file(file.filename):
-        return jsonify({'erro': 'Formato não suportado. Use JPG, PNG, WEBP ou GIF'}), 400
+        return jsonify({'erro': 'Formato não suportado: ' + ', '.join(ALLOWED_EXTENSIONS).upper()}), 400
 
     ext = file.filename.rsplit('.', 1)[1].lower()
     filename = f"{uuid.uuid4().hex}.{ext}"
@@ -404,6 +374,77 @@ def listar_stickers():
     return jsonify(files)
 
 
+@app.route('/api/wallpaper-global', methods=['GET'])
+@login_required
+def get_wallpaper_global():
+    db = get_db_g()
+    row = db.execute("SELECT valor FROM configuracoes_globais WHERE chave = 'active_wallpaper'").fetchone()
+    active_wallpaper = row['valor'] if row else None
+    
+    # Get all available wallpapers in static/images
+    image_dir = os.path.join(app.static_folder, 'images')
+    available = []
+    if os.path.exists(image_dir):
+        available = [f"/static/images/{f}" for f in os.listdir(image_dir) if allowed_file(f)]
+        
+    return jsonify({
+        'active_wallpaper': active_wallpaper,
+        'available': available
+    })
+
+@app.route('/api/upload-wallpaper-global', methods=['POST'])
+@login_required
+def upload_wallpaper_global():
+    if 'wallpaper' not in request.files:
+        return jsonify({'erro': 'Nenhum arquivo enviado'}), 400
+
+    file = request.files['wallpaper']
+    if not file or not allowed_file(file.filename):
+        return jsonify({'erro': 'Formato não suportado: ' + ', '.join(ALLOWED_EXTENSIONS).upper()}), 400
+
+    image_dir = os.path.join(app.static_folder, 'images')
+    os.makedirs(image_dir, exist_ok=True)
+    
+    ext = file.filename.rsplit('.', 1)[1].lower()
+    filename = f"custom_{uuid.uuid4().hex}.{ext}"
+    filepath = os.path.join(image_dir, filename)
+    file.save(filepath)
+
+    # Compress only if it's an image (skip for videos/gifs)
+    is_video = ext in {'mp4', 'webm', 'gif'}
+    if not is_video:
+        filepath = compress_image(filepath, max_size=1920, quality=80)
+    
+    filename = os.path.basename(filepath)
+    wallpaper_url = f"/static/images/{filename}"
+    
+    db = get_db_g()
+    db.execute("INSERT OR REPLACE INTO configuracoes_globais (chave, valor) VALUES ('active_wallpaper', ?)", (wallpaper_url,))
+    db.commit()
+
+    # Emit to all users via socket
+    socketio.emit('global_wallpaper_updated', {'url': wallpaper_url})
+    
+    return jsonify({'url': wallpaper_url})
+
+@app.route('/api/set-wallpaper-global', methods=['POST'])
+@login_required
+def set_wallpaper_global():
+    data = request.json
+    url = data.get('url')
+    if not url or not url.startswith('/static/images/'):
+        return jsonify({'erro': 'URL inválida'}), 400
+        
+    db = get_db_g()
+    db.execute("INSERT OR REPLACE INTO configuracoes_globais (chave, valor) VALUES ('active_wallpaper', ?)", (url,))
+    db.commit()
+
+    # Emit to all users
+    socketio.emit('global_wallpaper_updated', {'url': url})
+    
+    return jsonify({'sucesso': True})
+
+
 @app.route('/api/upload-sticker', methods=['POST'])
 @login_required
 def upload_sticker():
@@ -412,7 +453,7 @@ def upload_sticker():
 
     file = request.files['sticker']
     if not file or not allowed_file(file.filename):
-        return jsonify({'erro': 'Formato não suportado. Use JPG, PNG, WEBP ou GIF'}), 400
+        return jsonify({'erro': 'Formato não suportado: ' + ', '.join(ALLOWED_EXTENSIONS).upper()}), 400
 
     # Salvamos stickers na pasta de stickers para organização
     sticker_dir = os.path.join(app.static_folder, 'stickers')
@@ -477,9 +518,9 @@ def listar_conversas():
 
         # For direct chats, show the other person's name
         if c['tipo'] == 'direto':
-            # Derivar apenas nome/foto do outro participante em uma query leve
+            # Derivar apenas nome/foto/wallpaper do outro participante em uma query leve
             other = db.execute('''
-                SELECT COALESCE(NULLIF(u.nome, ''), u.username) AS nome, u.foto 
+                SELECT COALESCE(NULLIF(u.nome, ''), u.username) AS nome, u.foto, u.wallpaper
                 FROM conversa_membros cm 
                 JOIN usuarios u ON cm.usuario_id = u.id
                 WHERE cm.conversa_id = ? AND cm.usuario_id != ?
@@ -488,6 +529,10 @@ def listar_conversas():
             if other:
                 conv['display_nome'] = other['nome']
                 conv['display_foto'] = other['foto'] or ''
+                # Fallback para o wallpaper do perfil se a conversa em si não tiver um
+                wp = conv.get('wallpaper')
+                if not wp or wp == '':
+                    conv['wallpaper'] = other['wallpaper'] or ''
             else:
                 # Fallback se for um chat "consigo mesmo" ou estado inconsistente
                 conv['display_nome'] = 'Minhas Anotações'
@@ -522,8 +567,15 @@ def obter_conversa(id):
     conv['membros'] = [dict(m) for m in membros_raw]
     if conv['tipo'] == 'direto':
         other = [m for m in conv['membros'] if m['id'] != uid]
-        conv['display_nome'] = other[0]['nome'] if other else 'Chat'
-        conv['display_foto'] = other[0]['foto'] or '' if other else ''
+        if other:
+            conv['display_nome'] = other[0]['nome']
+            conv['display_foto'] = other[0]['foto'] or ''
+            # Fallback para wallpaper
+            if not conv.get('wallpaper'):
+                conv['wallpaper'] = other[0]['wallpaper'] or ''
+        else:
+            conv['display_nome'] = 'Minhas Anotações'
+            conv['display_foto'] = ''
     else:
         conv['display_nome'] = conv.get('nome') or 'Grupo'
         conv['display_foto'] = conv.get('foto') or ''
@@ -648,11 +700,10 @@ def upload_wallpaper_grupo(id):
         return jsonify({'erro': 'Nenhum arquivo enviado'}), 400
 
     file = request.files['wallpaper']
-    allowed_exts = {'jpg', 'jpeg', 'png', 'webp', 'gif'}
-    ext = file.filename.rsplit('.', 1)[1].lower() if '.' in file.filename else ''
-    if not file or ext not in allowed_exts:
-        return jsonify({'erro': 'Formato não suportado. Use JPG, PNG, WEBP ou GIF'}), 400
+    if not file or not allowed_file(file.filename):
+        return jsonify({'erro': 'Formato não suportado: ' + ', '.join(ALLOWED_EXTENSIONS).upper()}), 400
 
+    ext = file.filename.rsplit('.', 1)[1].lower()
     filename = f"group_wall_{uuid.uuid4().hex}.{ext}"
     filepath = os.path.join(UPLOAD_DIR, filename)
     file.save(filepath)
@@ -769,7 +820,7 @@ def listar_mensagens(id):
 
     query = '''
         SELECT m.*, COALESCE(NULLIF(u.nome, ''), u.username) as autor_nome, u.foto as autor_foto, u.username as autor_username,
-               r.conteudo as reply_content, COALESCE(NULLIF(ru.nome, ''), ru.username) as reply_author
+        r.media_url as reply_media, r.conteudo as reply_content, COALESCE(NULLIF(ru.nome, ''), ru.username) as reply_author
         FROM mensagens m 
         JOIN usuarios u ON m.usuario_id = u.id
         LEFT JOIN mensagens r ON m.reply_to_id = r.id
@@ -828,7 +879,7 @@ def enviar_mensagem(id):
     db.commit()
     msg = db.execute('''
         SELECT m.*, COALESCE(NULLIF(u.nome, ''), u.username) as autor_nome, u.foto as autor_foto, u.username as autor_username,
-               r.conteudo as reply_content, COALESCE(NULLIF(ru.nome, ''), ru.username) as reply_author
+        r.media_url as reply_media, r.conteudo as reply_content, COALESCE(NULLIF(ru.nome, ''), ru.username) as reply_author
         FROM mensagens m 
         JOIN usuarios u ON m.usuario_id = u.id
         LEFT JOIN mensagens r ON m.reply_to_id = r.id
@@ -970,7 +1021,7 @@ def chat_sync():
              ORDER BY m2.criado_em DESC LIMIT 1) as ultima_msg,
             (SELECT m3.criado_em FROM mensagens m3 WHERE m3.conversa_id = c.id 
              ORDER BY m3.criado_em DESC LIMIT 1) as ultima_msg_em,
-            pm.conteudo as pinned_content, COALESCE(NULLIF(u_pm.nome, ''), u_pm.username) as pinned_author
+            pm.conteudo as pinned_content, pm.media_url as pinned_media_url, COALESCE(NULLIF(u_pm.nome, ''), u_pm.username) as pinned_author
         FROM conversas c
         LEFT JOIN mensagens pm ON c.pinned_message_id = pm.id
         LEFT JOIN usuarios u_pm ON pm.usuario_id = u_pm.id
@@ -1001,9 +1052,18 @@ def chat_sync():
             m = membros_by_conv.get(c['id'], [])
             conv['membros'] = m
             if c['tipo'] == 'direto':
-                other = [u for u in m if u['id'] != uid]
-                conv['display_nome'] = other[0]['nome'] if other else 'Chat'
-                conv['display_foto'] = other[0]['foto'] if other else ''
+                others = [u for u in m if u['id'] != uid]
+                if others:
+                    other = others[0]
+                    conv['display_nome'] = other['nome']
+                    conv['display_foto'] = other['foto'] or ''
+                    # Fallback para wallpaper
+                    wp = conv.get('wallpaper')
+                    if not wp or wp == '':
+                        conv['wallpaper'] = other['wallpaper'] or ''
+                else:
+                    conv['display_nome'] = 'Minhas Anotações'
+                    conv['display_foto'] = ''
             else:
                 conv['display_nome'] = c['nome'] or 'Grupo'
                 conv['display_foto'] = c['foto'] or ''
@@ -1013,7 +1073,7 @@ def chat_sync():
                 if subtopico_id:
                     # Overwrite pinned info with subtopic's pin
                     pin = db.execute('''
-                        SELECT pm.id, pm.conteudo as pinned_content, COALESCE(NULLIF(u_pm.nome, ''), u_pm.username) as pinned_author
+                        SELECT pm.id, pm.conteudo as pinned_content, pm.media_url as pinned_media_url, COALESCE(NULLIF(u_pm.nome, ''), u_pm.username) as pinned_author
                         FROM grupo_subtopicos gs
                         JOIN mensagens pm ON gs.pinned_message_id = pm.id
                         JOIN usuarios u_pm ON pm.usuario_id = u_pm.id
@@ -1023,6 +1083,7 @@ def chat_sync():
                         conv['pinned_message_id'] = pin['id']
                         conv['pinned_content'] = pin['pinned_content']
                         conv['pinned_author'] = pin['pinned_author']
+                        conv['pinned_media_url'] = pin['pinned_media_url']
                     else:
                         conv['pinned_message_id'] = None
                         conv['pinned_content'] = None
@@ -1202,7 +1263,7 @@ def restaurar_mensagem(msg_id):
     # Fetch full message to notify clients
     res_msg = db.execute('''
         SELECT m.*, COALESCE(NULLIF(u.nome, ''), u.username) as autor_nome, u.foto as autor_foto, u.username as autor_username,
-               r.conteudo as reply_content, COALESCE(NULLIF(ru.nome, ''), ru.username) as reply_author
+        r.media_url as reply_media, r.conteudo as reply_content, COALESCE(NULLIF(ru.nome, ''), ru.username) as reply_author
         FROM mensagens m 
         JOIN usuarios u ON m.usuario_id = u.id
         LEFT JOIN mensagens r ON m.reply_to_id = r.id
@@ -1276,7 +1337,7 @@ def upload_media_chat(id):
     ext = file.filename.rsplit('.', 1)[1].lower() if '.' in file.filename else ''
     allowed = {'jpg', 'jpeg', 'png', 'webp', 'gif', 'mp4', 'webm', 'mov'}
     if ext not in allowed:
-        return jsonify({'erro': f'Formato .{ext} não suportado. Use imagem, GIF ou vídeo.'}), 400
+        return jsonify({'erro': 'Formato não suportado: ' + ', '.join(allowed).upper()}), 400
 
     filename = f"chat_{uuid.uuid4().hex}.{ext}"
     filepath = os.path.join(UPLOAD_DIR, filename)

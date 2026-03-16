@@ -168,6 +168,13 @@ def init_db():
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_sinais_destinatario ON sinais_call(destinatario_id)')
 
     cursor.execute('''
+            CREATE TABLE IF NOT EXISTS configuracoes_globais (
+                chave TEXT PRIMARY KEY,
+                valor TEXT
+            )
+        ''')
+
+    cursor.execute('''
             CREATE TABLE IF NOT EXISTS mensagens_apagadas (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 mensagem_id INTEGER,

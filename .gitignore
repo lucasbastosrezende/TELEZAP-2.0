@@ -1,0 +1,69 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+toca.db
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm
+.eslintcache
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
+
+# Logs
+*.log
+gateway.log
+gateway_err.log
+gateway_out.log
+server_err.log
+server_out.log
+debug_error.log
+debug_server.log
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Project Specific
+static/uploads/
+.agent/
+certs/
+commits_by_date.txt
+git_branches.txt
+git_log.txt
+git_reflog.txt
+reflog_by_date.txt
+index_old.html.tmp
+index_v2.html.tmp

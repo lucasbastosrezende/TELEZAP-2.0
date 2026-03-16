@@ -3,6 +3,15 @@ const httpProxy = require('http-proxy');
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
+const logStream = fs.createWriteStream(path.join(__dirname, 'gateway.log'), { flags: 'a' });
+
+function log(msg) {
+    const time = new Date().toISOString();
+    const line = `[${time}] ${msg}\n`;
+    console.log(msg);
+    logStream.write(line);
+}
+
 const app = express();
 
 const PORT = 8080;
@@ -28,15 +37,13 @@ try {
 const proxy = httpProxy.createProxyServer({
     xfwd: true,
     changeOrigin: true,
-    proxyTimeout: 30000, // 30s timeout
-    timeout: 30000
+    proxyTimeout: 1800000, // 30 minutes
+    timeout: 1800000
 });
 
 // Logging middleware
 app.use((req, res, next) => {
-    if (req.url.includes('/api/upload')) {
-        console.log(`[Gateway] Upload request: ${req.method} ${req.url} - ${req.headers['content-length']} bytes`);
-    }
+    log(`[Gateway] ${req.method} ${req.url} - ${req.headers['content-length'] || 0} bytes`);
     next();
 });
 
@@ -44,7 +51,7 @@ console.log('--- Gateway TocaChat (HTTPS + WebSocket Enabled) ---');
 
 // Error handling for proxy
 proxy.on('error', (err, req, res) => {
-    console.error('[Proxy Error]', err);
+    log(`[Proxy Error] ${err.message}`);
     if (res && res.writeHead) {
         res.writeHead(500, { 'Content-Type': 'text/plain' });
         res.end('Proxy Error');
@@ -79,6 +86,8 @@ app.all('/*', (req, res) => {
 });
 
 const server = https.createServer(httpsOptions, app);
+server.timeout = 600000; // 10 minutes session timeout
+server.keepAliveTimeout = 65000;
 
 // Handle WebSocket upgrades
 server.on('upgrade', (req, socket, head) => {

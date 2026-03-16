@@ -29,6 +29,32 @@ const isEmojiOnly = (str) => {
     return emojiCount >= 1 && emojiCount <= 3;
 };
 
+window.applyWallpaper = function(url, isGlobal = true) {
+    const bgVideo = document.getElementById('bgVideoWallpaper');
+    const isVideo = url && (url.toLowerCase().endsWith('.mp4') || url.toLowerCase().endsWith('.webm'));
+
+    if (isGlobal) {
+        if (isVideo) {
+            document.documentElement.style.setProperty('--active-chat-wallpaper', 'none');
+            if (bgVideo) {
+                bgVideo.src = url;
+                bgVideo.classList.remove('hidden');
+                bgVideo.classList.add('active');
+                bgVideo.play().catch(e => console.warn('Autoplay video wallpaper blocked', e));
+            }
+        } else {
+            document.documentElement.style.setProperty('--active-chat-wallpaper', url ? `url('${url}')` : 'none');
+            if (bgVideo) {
+                bgVideo.classList.add('hidden');
+                bgVideo.classList.remove('active');
+                bgVideo.pause();
+                bgVideo.src = '';
+            }
+        }
+    }
+    return isVideo;
+};
+
 // ── SocketIO Init ──
 const socket = io();
 window.socket = socket;
@@ -100,6 +126,12 @@ socket.on('pinned_update', (data) => {
 socket.on('subtopic_reordered', (data) => {
     if (conversaAtual && data.conversa_id === conversaAtual.id) {
         loadSubtopicos();
+    }
+});
+
+socket.on('global_wallpaper_updated', (data) => {
+    if (data.url) {
+        applyWallpaper(data.url, true);
     }
 });
 
@@ -211,6 +243,19 @@ async function abrirConversa(id) {
 
     conversaAtual = conv;
     window.conversaAtual = conversaAtual;
+    
+    // Aplica o wallpaper da conversa (se houver) ou o global
+    if (conv.wallpaper) {
+        applyWallpaper(conv.wallpaper, true);
+    } else {
+        // Fallback: buscar o wallpaper global se a conversa não tiver um próprio
+        api('/api/wallpaper-global').then(data => {
+            if (data.active_wallpaper && conversaAtual && conversaAtual.id === conv.id) {
+                applyWallpaper(data.active_wallpaper, true);
+            }
+        });
+    }
+
     socket.emit('join_conv', { conversa_id: id });
     lastMsgId = 0;
     subtopicAtual = null;
@@ -680,13 +725,21 @@ function renderSingleMessage(msg, isOptimistic = false, returnOnly = false) {
     }
 
     let replyHtml = '';
-    if (msg.reply_to_id && msg.reply_content) {
-        replyHtml = `
-            <div class="msg-reply-context" onclick="jumpToMessage(${msg.reply_to_id})">
-                <span class="reply-context-author">${msg.reply_author || 'Usuário'}</span>
-                <div class="reply-context-text">${escapeHtml(msg.reply_content)}</div>
-            </div>
-        `;
+    if (msg.reply_to_id) {
+        let replyText = msg.reply_content || '';
+        if (!replyText && msg.reply_media) {
+            const rExt = msg.reply_media.split('.').pop().toLowerCase();
+            replyText = ['mp4','webm','mov'].includes(rExt) ? '🎬 Vídeo' : '🖼️ Mídia';
+        }
+        
+        if (replyText || msg.reply_media) {
+            replyHtml = `
+                <div class="msg-reply-context" onclick="jumpToMessage(${msg.reply_to_id})">
+                    <span class="reply-context-author">${msg.reply_author || 'Usuário'}</span>
+                    <div class="reply-context-text">${escapeHtml(replyText)}</div>
+                </div>
+            `;
+        }
     }
 
     const authorName = (msg.autor_nome || 'Usuário').replace(/'/g, "\\'");
@@ -1090,10 +1143,18 @@ function renderEmojiPicker() {
     const container = document.getElementById('emojiResults');
     if (!container) return;
     
+    // Modern grid with smooth transitions and larger emojis
+    container.style.display = 'grid';
+    container.style.gridTemplateColumns = 'repeat(auto-fill, minmax(40px, 1fr))';
+    container.style.gap = '8px';
+    container.style.padding = '12px';
+    
     container.innerHTML = commonEmojis.map(emojiChar => {
         return `
-            <div onclick="selectEmoji('${emojiChar}')" style="cursor: pointer; padding: 0.2rem; border-radius: 8px; transition: background 0.2s; display: flex; align-items: center; justify-content: center; font-size: 1.5rem;"
-                 onmouseover="this.style.background='rgba(255,255,255,0.1)'" onmouseout="this.style.background='transparent'">
+            <div class="emoji-item" onclick="selectEmoji('${emojiChar}')" 
+                 style="cursor: pointer; height: 40px; border-radius: 10px; transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); display: flex; align-items: center; justify-content: center; font-size: 1.4rem; user-select: none;"
+                 onmouseenter="this.style.background='var(--primary-light)'; this.style.transform='scale(1.15)';" 
+                 onmouseleave="this.style.background='transparent'; this.style.transform='scale(1)';">
                 ${emojiChar}
             </div>
         `;
@@ -1227,15 +1288,158 @@ function selectSticker(url) {
 }
 window.selectSticker = selectSticker;
 
-document.getElementById('btnConfigWallpaper')?.addEventListener('click', () => {
-    const btnNav = document.getElementById('btnEditProfileNav');
-    if (btnNav) {
-        btnNav.click();
-    } else {
-        // Fallback for direct trigger
-        document.getElementById('btnEditProfile')?.click();
+document.getElementById('btnConfigWallpaper')?.addEventListener('click', async () => {
+    try {
+        const data = await api('/api/wallpaper-global');
+        const activeUrl = data.active_wallpaper;
+        const available = data.available || [];
+
+        openModal('Papéis de Parede Shared', `
+            <div class="wallpaper-manager">
+                <!-- Zona de Upload Moderna -->
+                <div class="upload-zone" id="wallpaperUploadZone" onclick="document.getElementById('inputUploadWallpaper').click()">
+                    <div class="upload-zone-content">
+                        <div class="upload-zone-icon">
+                            <i data-lucide="upload-cloud"></i>
+                        </div>
+                        <h3>Upload Novo Wallpaper</h3>
+                        <p style="color: var(--text-muted); font-size: 0.9rem;">Arraste e solte ou clique para selecionar</p>
+                        <input type="file" id="inputUploadWallpaper" accept="image/*,video/mp4,video/webm" style="display: none">
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label" style="display: flex; justify-content: space-between; align-items: center">
+                        Wallpapers Disponíveis
+                        <span style="font-size: 0.8rem; opacity: 0.6;">${available.length} itens</span>
+                    </label>
+                    <div class="wallpaper-grid-modern" id="globalWallpaperGrid">
+                        ${available.map(url => {
+                            const isVid = url.toLowerCase().endsWith('.mp4') || url.toLowerCase().endsWith('.webm');
+                            return `
+                            <div class="wallpaper-card ${url === activeUrl ? 'active' : ''} ${isVid ? 'is-video' : ''}" 
+                                 onclick="window.setGlobalWallpaper('${url}')">
+                                ${isVid 
+                                    ? `<video src="${url}" muted loop playsinline onmouseenter="this.play()" onmouseleave="this.pause(); this.currentTime=0"></video>` 
+                                    : `<img src="${url}" alt="Wallpaper" loading="lazy">`
+                                }
+                                <div class="wallpaper-card-overlay"></div>
+                            </div>`;
+                        }).join('')}
+                    </div>
+                </div>
+            </div>
+        `, `<button class="btn btn-ghost" onclick="closeModal()">Fechar</button>`);
+
+        if (window.lucide) lucide.createIcons();
+        setupWallpaperUploadHandlers();
+
+    } catch (err) {
+        console.error('Falha ao abrir seletor de wallpaper', err);
     }
 });
+
+// Listener para o botão de wallpaper no HEADER da conversa
+document.getElementById('btnChatWallpaper')?.addEventListener('click', () => {
+    if (!conversaAtual) return;
+    initWallpaperLibrary(async (url) => {
+        try {
+            // Se for grupo, usa o endpoint de editar grupo. Se for direto, precisamos de uma forma de salvar.
+            // O endpoint /api/conversas/<id> (PUT) serve para ambos.
+            await api(`/api/conversas/${conversaAtual.id}`, {
+                method: 'PUT',
+                body: { 
+                    nome: conversaAtual.nome, 
+                    descricao: conversaAtual.descricao, 
+                    wallpaper: url 
+                }
+            });
+            conversaAtual.wallpaper = url;
+            applyWallpaper(url, true);
+            showToast('Papel de parede da conversa atualizado! ✨', 'success');
+            loadConversas(); // Atualiza o mini-wallpaper no sidebar
+        } catch (err) {
+            showToast('Erro ao salvar papel de parede', 'error');
+        }
+    });
+});
+
+function setupWallpaperUploadHandlers() {
+    const zone = document.getElementById('wallpaperUploadZone');
+    const input = document.getElementById('inputUploadWallpaper');
+
+    if (!zone || !input) return;
+
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(evt => {
+        zone.addEventListener(evt, (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+        });
+    });
+
+    ['dragenter', 'dragover'].forEach(evt => {
+        zone.addEventListener(evt, () => zone.classList.add('dragover'));
+    });
+
+    ['dragleave', 'drop'].forEach(evt => {
+        zone.addEventListener(evt, () => zone.classList.remove('dragover'));
+    });
+
+    zone.addEventListener('drop', (e) => {
+        const files = e.dataTransfer.files;
+        if (files.length) {
+            input.files = files;
+            window.uploadGlobalWallpaper();
+        }
+    });
+
+    input.addEventListener('change', () => {
+        if (input.files.length) {
+            window.uploadGlobalWallpaper();
+        }
+    });
+}
+
+window.uploadGlobalWallpaper = async function() {
+    const input = document.getElementById('inputUploadWallpaper');
+    if (!input.files || !input.files[0]) {
+        showToast('Selecione uma imagem', 'warning');
+        return;
+    }
+    
+    const file = input.files[0];
+    const formData = new FormData();
+    formData.append('wallpaper', file);
+    
+    try {
+        showToast('Subindo wallpaper...', 'info');
+        const res = await api('/api/upload-wallpaper-global', {
+            method: 'POST',
+            body: formData
+        });
+        showToast('Wallpaper atualizado para todos! 🌟', 'success');
+        closeModal();
+        if (res.url) {
+            applyWallpaper(res.url, true);
+        }
+    } catch (err) {
+        showToast('Erro ao subir wallpaper', 'error');
+    }
+};
+
+window.setGlobalWallpaper = async function(url) {
+    try {
+        await api('/api/set-wallpaper-global', {
+            method: 'POST',
+            body: { url }
+        });
+        showToast('Wallpaper global alterado! ✨', 'success');
+        applyWallpaper(url, true);
+        closeModal();
+    } catch (err) {
+        showToast('Erro ao definir wallpaper', 'error');
+    }
+};
 
 // ══════════════════════════════════════════════
 //  Unified Sync Polling
@@ -1339,20 +1543,62 @@ document.getElementById('btnNovoGrupo')?.addEventListener('click', async () => {
     try {
         const usuarios = await api('/api/usuarios');
         const others = usuarios.filter(u => u.id !== currentUser.id);
-        const checkboxes = others.map(u => `
-            <label class="user-checkbox" style="display:flex;align-items:center;gap:0.75rem;padding:0.5rem;cursor:pointer;border-radius:var(--radius-sm)">
+        
+        const cards = others.map(u => `
+            <div class="selection-card" onclick="toggleSelectionCard(this)" data-user-name="${u.nome.toLowerCase()}" data-user-username="${u.username?.toLowerCase() || ''}">
                 <input type="checkbox" value="${u.id}" class="grupo-membro-check">
-                <div class="chat-item-avatar" style="width:32px;height:32px">
-                    ${u.foto ? `<img src="${u.foto}" alt="">` : `<span>${u.nome.charAt(0)}</span>`}
+                <div class="card-avatar">
+                    ${u.foto ? `<img src="${u.foto}" alt="">` : `<span>${u.nome.charAt(0).toUpperCase()}</span>`}
                 </div>
-                <span>${u.nome}</span>
-            </label>`).join('');
+                <div class="card-info">
+                    <span class="card-name">${u.nome}</span>
+                    <span class="card-username">@${u.username || 'user'}</span>
+                </div>
+            </div>`).join('');
+
         openModal('Novo Grupo', `
-            <div class="form-group"><label class="form-label">Nome do Grupo</label><input type="text" class="input" id="grupoNome" placeholder="Ex: Grupo de Estudos"></div>
-            <div class="form-group"><label class="form-label">Membros</label><div style="max-height:200px;overflow-y:auto">${checkboxes||'<p class="empty-state">Nenhum outro usuário</p>'}</div></div>
+            <div class="member-selection-container">
+                <div class="form-group">
+                    <label class="form-label">Nome do Grupo</label>
+                    <input type="text" class="input" id="grupoNome" placeholder="Ex: Grupo de Estudos">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Membros</label>
+                    <div class="member-search-container">
+                        <input type="text" class="input" placeholder="🔍 Buscar membros..." 
+                               onkeyup="filterGroupMembers(this.value)">
+                    </div>
+                </div>
+                <div class="member-selection-grid" id="memberSelectionGrid">
+                    ${cards || '<p class="empty-state">Nenhum outro usuário disponível</p>'}
+                </div>
+            </div>
         `, `<button class="btn btn-ghost" onclick="closeModal()">Cancelar</button><button class="btn btn-primary" onclick="criarGrupo()">Criar Grupo</button>`);
-    } catch(err) { showToast('Erro ao carregar usuários','error'); }
+    } catch(err) { 
+        console.error(err);
+        showToast('Erro ao carregar usuários','error'); 
+    }
 });
+
+window.toggleSelectionCard = function(el) {
+    const cb = el.querySelector('.grupo-membro-check');
+    cb.checked = !cb.checked;
+    el.classList.toggle('selected', cb.checked);
+};
+
+window.filterGroupMembers = function(query) {
+    const q = query.toLowerCase();
+    const cards = document.querySelectorAll('.selection-card');
+    cards.forEach(card => {
+        const name = card.getAttribute('data-user-name');
+        const username = card.getAttribute('data-user-username');
+        if (name.includes(q) || username.includes(q)) {
+            card.style.display = 'flex';
+        } else {
+            card.style.display = 'none';
+        }
+    });
+};
 
 async function criarGrupo() {
     const nome = document.getElementById('grupoNome').value.trim();
@@ -1534,6 +1780,18 @@ document.getElementById('btnEditGrupo')?.addEventListener('click', async () => {
                 grupoSearchTimeout = setTimeout(() => { appFetchTenorSearch(q, renderGrupoWallGifs); }, 500);
             });
         }
+          // Handler para a biblioteca shared no grupo
+        document.getElementById('btnGrupoWallLibrary')?.addEventListener('click', () => {
+            initWallpaperLibrary((url) => {
+                const preview = document.getElementById('grupoWallPreview');
+                if (preview) {
+                    preview.innerHTML = `<img src="${url}" style="width: 100%; height: 100%; object-fit: cover;">`;
+                }
+                // Guardamos temporariamente no window ou em algum lugar para o salvarGrupo ler
+                window._pendingGroupWallpaper = url;
+                showToast('Wallpaper selecionado da biblioteca! 🎨', 'info');
+            });
+        });
     }, 100);
 });
 
@@ -1661,6 +1919,7 @@ async function excluirChat(id, nome) {
             document.getElementById('chatInputArea').classList.add('hidden');
             document.getElementById('chatParticipants').classList.add('hidden');
             document.querySelector('.chat-layout').classList.add('no-participants');
+            renderPinnedMessageBar();
         }
         await loadConversas();
     } catch(err) {
@@ -1683,6 +1942,7 @@ async function excluirGrupoInteiro() {
         document.getElementById('chatInputArea').classList.add('hidden');
         document.getElementById('chatParticipants').classList.add('hidden');
         document.querySelector('.chat-layout').classList.add('no-participants');
+        renderPinnedMessageBar();
         await loadConversas();
     } catch(err) {
         showToast('Erro ao excluir grupo', 'error');
@@ -1715,6 +1975,7 @@ document.getElementById('btnBackChat')?.addEventListener('click', () => {
     document.getElementById('subtopicsBar').classList.add('hidden');
     document.getElementById('chatParticipants').classList.add('hidden');
     document.querySelector('.chat-layout').classList.add('no-participants');
+    renderPinnedMessageBar();
     renderConversasList();
 });
 
@@ -1839,11 +2100,35 @@ async function desafixarMensagem() {
 
 function renderPinnedMessageBar() {
     const bar = document.getElementById('pinnedMessageBar');
-    if (!conversaAtual || !bar) return;
+    if (!bar) return;
+
+    if (!conversaAtual) {
+        bar.classList.add('hidden');
+        return;
+    }
 
     if (conversaAtual.pinned_message_id) {
         document.getElementById('pinnedMessageAuthor').textContent = conversaAtual.pinned_author || 'Usuário';
-        document.getElementById('pinnedMessageText').textContent = conversaAtual.pinned_content || '...';
+        
+        const textEl = document.getElementById('pinnedMessageText');
+        const mediaUrl = conversaAtual.pinned_media_url;
+        let content = conversaAtual.pinned_content || '';
+        
+        if (mediaUrl) {
+            const isVideo = mediaUrl.match(/\.(mp4|webm|mov)$/i);
+            const isGif = mediaUrl.match(/\.gif$/i);
+            const label = isVideo ? '🎥 Vídeo' : (isGif ? '🖼️ GIF' : '📷 Foto');
+            
+            if (!content || content === '...') {
+                content = label;
+            } else {
+                content = `${label} • ${content}`;
+            }
+        } else if (!content) {
+            content = '...';
+        }
+
+        textEl.textContent = content;
         bar.classList.remove('hidden');
     } else {
         bar.classList.add('hidden');
@@ -1994,7 +2279,66 @@ window.abrirConversa = abrirConversa = async function(id) {
     window._clearUnreadOnOpen(id);
     return _origOpen(id);
 };
+// Wallpaper system already handled at the top of the file
 
+/**
+ * Abre a Biblioteca de Wallpapers Shared e executa callback ao selecionar
+ */
+window.initWallpaperLibrary = async function(onSelect) {
+    try {
+        const data = await api('/api/wallpaper-global');
+        const activeUrl = data.active_wallpaper;
+        const available = data.available || [];
+
+        openModal('Biblioteca de Wallpapers', `
+            <div class="wallpaper-manager">
+                <div class="form-group">
+                    <label class="form-label" style="display: flex; justify-content: space-between; align-items: center">
+                        Escolha um Fundo Premium
+                        <span style="font-size: 0.8rem; opacity: 0.6;">${available.length} itens</span>
+                    </label>
+                    <div class="wallpaper-grid-modern" id="libraryWallpaperGrid">
+                        ${available.map(url => {
+                            const isVid = url.toLowerCase().endsWith('.mp4') || url.toLowerCase().endsWith('.webm');
+                            return `
+                            <div class="wallpaper-card ${url === activeUrl ? 'active' : ''} ${isVid ? 'is-video' : ''}" 
+                                 onclick="window._selectFromLibrary('${url}')">
+                                ${isVid 
+                                    ? `<video src="${url}" muted loop playsinline onmouseenter="this.play()" onmouseleave="this.pause(); this.currentTime=0"></video>` 
+                                    : `<img src="${url}" alt="Wallpaper" loading="lazy">`
+                                }
+                                <div class="wallpaper-card-overlay"></div>
+                            </div>`;
+                        }).join('')}
+                    </div>
+                </div>
+                <p style="font-size: 0.8rem; color: var(--text-muted); text-align: center">Os itens acima são compartilhados por toda a comunidade. 🌟</p>
+            </div>
+        `, `<button class="btn btn-ghost" onclick="closeModal()">Fechar</button>`);
+
+        window._selectFromLibrary = (url) => {
+            if (onSelect) onSelect(url);
+            closeModal();
+        };
+
+    } catch (err) {
+        showToast('Erro ao carregar biblioteca', 'error');
+    }
+};
+
+async function initGlobalWallpaper() {
+    try {
+        const data = await api('/api/wallpaper-global');
+        if (data.active_wallpaper) {
+            applyWallpaper(data.active_wallpaper, true);
+        }
+    } catch (err) {
+        console.warn('Falha ao inicializar wallpaper global', err);
+    }
+}
+
+// Inicializa o wallpaper global ao carregar o script
+initGlobalWallpaper();
 // Notify about a new message in the CURRENT conversation
 function notifyNewMessage(msg, conv) {
     if (!conv) return;
