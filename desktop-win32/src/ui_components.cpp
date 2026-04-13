@@ -168,7 +168,10 @@ ChatUiLayout BuildChatLayout(const AppState& state) {
         bubble.own_message = own_message;
         bubble.rect = D2D1::RectF(bubble_left, bubble_top, bubble_left + bubble_width, bubble_top + bubble_height);
         layout.message_rows.push_back(bubble);
-        bubble_top += bubble_height + 12.0f;
+        // Se a mensagem tem reações, reservar espaço extra abaixo do balão para as pílulas
+        // (pílula = 22px altura + 4px gap entre balão e pílulas + 4px de respiro até o próximo balão)
+        const float reaction_extra = mensagem.reacoes.empty() ? 0.0f : 30.0f;
+        bubble_top += bubble_height + 12.0f + reaction_extra;
     }
 
     return layout;

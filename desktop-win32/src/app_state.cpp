@@ -50,6 +50,7 @@ void AppState::ReturnToAuth() {
     chat_status_.clear();
     composer_text_.clear();
     busy_ = false;
+    socket_connected_ = false;
     current_user_.reset();
     conversations_.clear();
     messages_by_conversation_.clear();
@@ -142,6 +143,10 @@ void AppState::ClearComposer() {
 
 void AppState::SetBusy(bool busy) noexcept {
     busy_ = busy;
+}
+
+void AppState::SetSocketConnected(bool value) noexcept {
+    socket_connected_ = value;
 }
 
 const Usuario* AppState::current_user() const noexcept {

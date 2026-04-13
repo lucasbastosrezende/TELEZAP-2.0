@@ -30,6 +30,7 @@ public:
     void SetComposerText(std::wstring text);
     void ClearComposer();
     void SetBusy(bool busy) noexcept;
+    void SetSocketConnected(bool value) noexcept;
 
     AppScreen screen() const noexcept { return screen_; }
     float window_width() const noexcept { return window_width_; }
@@ -44,6 +45,7 @@ public:
     const CallState& call_state() const noexcept { return call_state_; }
     const std::wstring& composer_text() const noexcept { return composer_text_; }
     bool busy() const noexcept { return busy_; }
+    bool socket_connected() const noexcept { return socket_connected_; }
     int selected_conversation_id() const noexcept;
     int last_message_id_for_selected_conversation() const noexcept;
 
@@ -63,6 +65,7 @@ private:
     std::wstring chat_status_;
     std::wstring composer_text_;
     bool busy_ = false;
+    bool socket_connected_ = false;
     CallState call_state_;
 };
 

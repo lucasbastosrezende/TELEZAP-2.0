@@ -271,7 +271,11 @@ void Renderer::DrawChatShell(const AppState& state, const ChatUiLayout& layout) 
                   DWRITE_TEXT_ALIGNMENT_TRAILING);
     }
 
-    brush_->SetColor(theme_.accent);
+    // Indicador de conexão Socket.IO: verde = conectado, vermelho = desconectado/reconectando
+    const D2D1_COLOR_F dot_color = state.socket_connected()
+        ? theme_.accent
+        : ColorFromHex(0xff6b6b);
+    brush_->SetColor(dot_color);
     render_target_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(layout.chat_header.right - 26.0f, layout.chat_header.top + 24.0f), 7.0f, 7.0f), brush_.Get());
 
     const std::vector<Mensagem>& messages = state.selected_messages();
@@ -286,6 +290,34 @@ void Renderer::DrawChatShell(const AppState& state, const ChatUiLayout& layout) 
                   D2D1::RectF(text_rect.left, bubble.rect.bottom - 22.0f, text_rect.right, bubble.rect.bottom - 8.0f),
                   ColorFromHex(0xffffff, 0.65f),
                   bubble.own_message ? DWRITE_TEXT_ALIGNMENT_TRAILING : DWRITE_TEXT_ALIGNMENT_LEADING);
+
+        // Pílulas de reações: desenhadas logo abaixo do balão
+        if (!mensagem.reacoes.empty()) {
+            constexpr float kPillH    = 22.0f;
+            constexpr float kPillW    = 46.0f;
+            constexpr float kPillGap  = 5.0f;
+            constexpr float kPillTopGap = 4.0f;  // espaço entre balão e pílulas
+
+            const float pill_y = bubble.rect.bottom + kPillTopGap;
+            float pill_cursor = bubble.own_message
+                ? bubble.rect.right           // mensagem própria: pílulas alinhadas à direita
+                : bubble.rect.left;           // mensagem alheia: pílulas alinhadas à esquerda
+
+            for (const auto& [emoji, users] : mensagem.reacoes) {
+                const std::wstring label = emoji + L"\u202F" + std::to_wstring(users.size());
+                D2D1_RECT_F pill_rect{};
+                if (bubble.own_message) {
+                    pill_rect = D2D1::RectF(pill_cursor - kPillW, pill_y, pill_cursor, pill_y + kPillH);
+                    pill_cursor -= kPillW + kPillGap;
+                } else {
+                    pill_rect = D2D1::RectF(pill_cursor, pill_y, pill_cursor + kPillW, pill_y + kPillH);
+                    pill_cursor += kPillW + kPillGap;
+                }
+                DrawCard(pill_rect, ColorFromHex(0x2d2d44, 0.92f), 11.0f);
+                DrawLabel(label, small_format_.Get(), pill_rect, theme_.text_primary,
+                          DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            }
+        }
     }
 
     DrawCard(layout.composer, ColorFromHex(0x17172c, 0.96f), 16.0f);

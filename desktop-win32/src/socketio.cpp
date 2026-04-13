@@ -107,7 +107,10 @@ bool SocketIoClient::OpenSession() {
     if (session_handle_ == nullptr) {
         return false;
     }
-    ::WinHttpSetTimeouts(session_handle_, 5000, 5000, 5000, 8000);
+    // Resolve/connect/send: 5s cada. Receive: 35s.
+    // Engine.IO long-poll: o servidor segura o GET aberto por ~25s (pingInterval padrão).
+    // Com 8s o cliente cronometrava antes do servidor responder, causando reconexão constante.
+    ::WinHttpSetTimeouts(session_handle_, 5000, 5000, 5000, 35000);
     return true;
 }
 
@@ -264,6 +267,8 @@ void SocketIoClient::ProcessPacket(const std::string& packet) {
         return;
     }
 
+    // ── Engine.IO packet types ─────────────────────────────────────────────
+    // '0' open: servidor envia SID e configurações de ping/timeout
     if (packet[0] == '0') {
         try {
             Json open = Json::parse(packet.substr(1));
@@ -276,16 +281,39 @@ void SocketIoClient::ProcessPacket(const std::string& packet) {
         return;
     }
 
+    // '1' close: servidor pediu encerramento da sessão
+    if (packet[0] == '1') {
+        connected_ = false;
+        sid_.clear();
+        return;
+    }
+
+    // '2' ping: servidor envia ping, cliente responde com '3' pong
     if (packet == "2") {
         SendEnginePacket("3");
         return;
     }
 
+    // '6' noop: keepalive sem conteúdo, ignorar silenciosamente
+    if (packet[0] == '6') {
+        return;
+    }
+
+    // ── Socket.IO packet types (prefixados com EIO type '4') ──────────────
+    // '40' namespace connect: Socket.IO confirmou entrada no namespace "/"
     if (packet.rfind("40", 0) == 0) {
         NotifyStatus(true, L"Namespace Socket.IO pronto.");
         return;
     }
 
+    // '41' namespace disconnect: servidor expulsou do namespace, reconectar
+    if (packet.rfind("41", 0) == 0) {
+        connected_ = false;
+        sid_.clear();
+        return;
+    }
+
+    // '42' event: pacote de evento Socket.IO (formato ["nome", payload])
     if (packet.rfind("42", 0) == 0) {
         try {
             Json payload = Json::parse(packet.substr(2));
@@ -321,22 +349,40 @@ bool SocketIoClient::PollOnce() {
     }
     if (!response.empty()) {
         ProcessPayload(response);
+    } else {
+        // Resposta vazia: servidor respondeu antes do timeout do long-poll (incomum).
+        // Pausa curta para não criar spin-loop caso o servidor fique respondendo rápido.
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
     }
-    return true;
+    // Retorna false se ProcessPayload limpou sid_ (ex.: pacote close '1' ou '41')
+    return !sid_.empty();
 }
 
 void SocketIoClient::WorkerLoop() {
+    // Backoff exponencial para reconexões: começa em 2s, dobra até o cap de 30s.
+    // Reseta para 2s a cada vez que o polling entra em estado conectado com sucesso.
+    uint32_t retry_ms = 2000;
+
     while (running_) {
         sid_.clear();
+
         if (!Handshake() || !OpenNamespace()) {
-            NotifyStatus(false, L"Falha ao conectar no Socket.IO. Novo retry em 3s.");
-            std::this_thread::sleep_for(std::chrono::seconds(3));
+            const std::wstring delay_label = std::to_wstring(retry_ms / 1000);
+            NotifyStatus(false, L"Falha ao conectar Socket.IO. Retry em " + delay_label + L"s.");
+            // Sleep em fatias de 200 ms para responder rapidamente ao Stop()
+            for (uint32_t elapsed = 0; elapsed < retry_ms && running_; elapsed += 200) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            }
+            retry_ms = std::min(retry_ms * 2, static_cast<uint32_t>(30000));
             continue;
         }
 
+        retry_ms = 2000;  // Reconectou com sucesso: reseta o backoff
+
         while (running_) {
             if (!PollOnce()) {
-                NotifyStatus(false, L"Socket.IO desconectado. Tentando reconectar.");
+                // Falha de poll: pode ser timeout HTTP, close pelo servidor, ou sid_ limpo por '1'/'41'
+                NotifyStatus(false, L"Socket.IO desconectado. Reconectando...");
                 connected_ = false;
                 sid_.clear();
                 break;

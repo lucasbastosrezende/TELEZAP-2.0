@@ -439,6 +439,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
             return 0;
         }
         state_.SetChatStatus(pending->message);
+        state_.SetSocketConnected(pending->connected);
         if (pending->connected) {
             if (const Usuario* user = state_.current_user(); user != nullptr) {
                 socketio_.EmitEvent(L"join", Json{{"user_id", user->id}, {"conversa_id", state_.selected_conversation_id()}});
