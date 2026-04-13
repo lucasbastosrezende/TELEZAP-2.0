@@ -1,0 +1,24 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31912.275
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "TocaChat", "TocaChat.vcxproj", "{B6D2D57E-B6B7-4A64-BDC6-4E0645F61A8C}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{B6D2D57E-B6B7-4A64-BDC6-4E0645F61A8C}.Debug|x64.ActiveCfg = Debug|x64
+		{B6D2D57E-B6B7-4A64-BDC6-4E0645F61A8C}.Debug|x64.Build.0 = Debug|x64
+		{B6D2D57E-B6B7-4A64-BDC6-4E0645F61A8C}.Release|x64.ActiveCfg = Release|x64
+		{B6D2D57E-B6B7-4A64-BDC6-4E0645F61A8C}.Release|x64.Build.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {CB8C35A5-9DF0-4A2C-BE64-5255E7F593D4}
+	EndGlobalSection
+EndGlobal
